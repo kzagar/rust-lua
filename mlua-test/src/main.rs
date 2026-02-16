@@ -32,6 +32,16 @@ fn register_modules(lua: &Lua, app_state: Arc<Mutex<AppState>>) -> LuaResult<()>
     })?;
     lua.globals().set("wait", wait_func)?;
 
+    // Register now function for high-res timing
+    let now_func = lua.create_function(|_, ()| {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let start = SystemTime::now();
+        let since_the_epoch = start.duration_since(UNIX_EPOCH)
+            .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+        Ok(since_the_epoch.as_secs_f64())
+    })?;
+    lua.globals().set("now", now_func)?;
+
     Ok(())
 }
 

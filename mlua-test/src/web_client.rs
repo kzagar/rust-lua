@@ -70,9 +70,17 @@ pub fn register(lua: &Lua) -> LuaResult<()> {
     let http = lua.create_table()?;
     http.set(
         "new",
-        lua.create_function(|_, ()| {
+        lua.create_function(|_, options: Option<LuaTable>| {
+            let mut builder = Client::builder();
+            if let Some(opts) = options {
+                if opts.get::<bool>("insecure").unwrap_or(false) {
+                    builder = builder.danger_accept_invalid_certs(true);
+                }
+            }
             Ok(HttpClient {
-                client: Client::new(),
+                client: builder
+                    .build()
+                    .map_err(|e| LuaError::RuntimeError(e.to_string()))?,
             })
         })?,
     )?;
