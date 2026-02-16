@@ -17,3 +17,5 @@ lua
 target/
 Cargo.lock
 check_output.txt
+zig-linux-x86_64-0.13.0.tar.xz
+zig-toolchain

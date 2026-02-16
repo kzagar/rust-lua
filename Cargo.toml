@@ -2,6 +2,6 @@
 members = [
     "rua",
     "rua-resty-http",
-    "rua-cli",
+    "rua-cli", "mlua-test",
 ]
 resolver = "2"
