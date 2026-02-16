@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 async fn run_lua_file(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let input = fs::read_to_string(path)?;
+    let input = fs::read(path)?;
     let mut lua = LuaState::new();
     rua::stdlib::open_libs(&mut lua);
 

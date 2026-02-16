@@ -698,7 +698,10 @@ impl LuaState {
                         if let Some(caller_frame) = self.frames.last() {
                             let caller_pc = caller_frame.pc - 1;
                             let call_inst = caller_frame.closure.proto.instructions[caller_pc];
-                            let dest_a = caller_frame.base + call_inst.a() as usize;
+                            let mut dest_a = caller_frame.base + call_inst.a() as usize;
+                            if call_inst.opcode() == OpCode::TForCall as u32 {
+                                dest_a += 3;
+                            }
                             let expected_nres = frame.nresults;
                             if expected_nres == -1 {
                                 for i in 0..nres {
@@ -763,6 +766,58 @@ impl LuaState {
                         }
                     }
                     OpCode::VarArgPrep => {}
+                    OpCode::NewTable => {
+                        let a = inst.a() as usize;
+                        let mut global = self.global.lock().unwrap();
+                        let table = global.heap.allocate(crate::value::Table::new());
+                        self.stack[base + a] = Value::Table(table);
+                    }
+                    OpCode::SetTable => {
+                        let a = inst.a() as usize;
+                        let b = inst.b() as usize;
+                        let c = inst.c() as usize;
+                        let table = self.stack[base + a];
+                        let key = self.stack[base + b];
+                        let val = if (c & 1) != 0 {
+                            let frame = self.frames.last().unwrap();
+                            frame.closure.proto.k[c >> 1]
+                        } else {
+                            self.stack[base + (c >> 1)]
+                        };
+                        if let Value::Table(t_gc) = table {
+                            unsafe {
+                                let t = &mut (*t_gc.ptr.as_ptr()).data;
+                                t.map.insert(key, val);
+                            }
+                        } else {
+                            return Err(LuaError::RuntimeError(
+                                "SETTABLE: target is not a table".to_string(),
+                            ));
+                        }
+                    }
+                    OpCode::SetI => {
+                        let a = inst.a() as usize;
+                        let b = inst.b() as usize;
+                        let c = inst.c() as usize;
+                        let table = self.stack[base + a];
+                        let key = Value::Integer(b as i64);
+                        let val = if (c & 1) != 0 {
+                            let frame = self.frames.last().unwrap();
+                            frame.closure.proto.k[c >> 1]
+                        } else {
+                            self.stack[base + (c >> 1)]
+                        };
+                        if let Value::Table(t_gc) = table {
+                            unsafe {
+                                let t = &mut (*t_gc.ptr.as_ptr()).data;
+                                t.map.insert(key, val);
+                            }
+                        } else {
+                            return Err(LuaError::RuntimeError(
+                                "SETI: target is not a table".to_string(),
+                            ));
+                        }
+                    }
                     OpCode::SetField => {
                         let a = inst.a() as usize;
                         let b = inst.b() as usize;
@@ -770,7 +825,11 @@ impl LuaState {
                         let frame = self.frames.last().unwrap();
                         let table = self.stack[base + a];
                         let key = frame.closure.proto.k[b];
-                        let val = self.stack[base + (c >> 1)];
+                        let val = if (c & 1) != 0 {
+                            frame.closure.proto.k[c >> 1]
+                        } else {
+                            self.stack[base + (c >> 1)]
+                        };
                         if let Value::Table(t_gc) = table {
                             unsafe {
                                 let t = &mut (*t_gc.ptr.as_ptr()).data;
@@ -840,7 +899,11 @@ impl LuaState {
                             (Value::Number(n), Value::Number(s)) => {
                                 self.stack[base + a] = Value::Number(n - s);
                             }
-                            _ => return Err(LuaError::RuntimeError("numeric for: invalid types".to_string())),
+                            _ => {
+                                return Err(LuaError::RuntimeError(
+                                    "numeric for: invalid types".to_string(),
+                                ))
+                            }
                         }
 
                         let frame = self.frames.last_mut().unwrap();
@@ -864,12 +927,75 @@ impl LuaState {
                                 let cond = if s > 0.0 { next <= l } else { next >= l };
                                 (Value::Number(next), cond)
                             }
-                            _ => return Err(LuaError::RuntimeError("numeric for: invalid types".to_string())),
+                            _ => {
+                                return Err(LuaError::RuntimeError(
+                                    "numeric for: invalid types".to_string(),
+                                ))
+                            }
                         };
 
                         if loop_cond {
                             self.stack[base + a] = next;
                             self.stack[base + a + 3] = next; // set user variable
+                            let frame = self.frames.last_mut().unwrap();
+                            frame.pc = (frame.pc as i32 + sbx) as usize;
+                        }
+                    }
+                    OpCode::TForPrep => {
+                        let sj = inst.sj();
+                        let frame = self.frames.last_mut().unwrap();
+                        frame.pc = (frame.pc as i32 + sj) as usize;
+                    }
+                    OpCode::TForCall => {
+                        let a = inst.a() as usize;
+                        let c = inst.c() as usize;
+                        let func_idx = base + a;
+                        let func = self.stack[func_idx];
+
+                        match func {
+                            Value::RustFunction(f) => {
+                                let old_top = self.top;
+                                self.top = func_idx + 3; // f, s, var are at func_idx, func_idx+1, func_idx+2
+                                let nres = f(self).await?;
+                                let actual_results_start = self.top - nres;
+                                let expected_nres = c;
+                                for i in 0..expected_nres {
+                                    self.stack[func_idx + 3 + i] = if i < nres {
+                                        self.stack[actual_results_start + i]
+                                    } else {
+                                        Value::Nil
+                                    };
+                                }
+                                self.top = old_top;
+                            }
+                            Value::LuaFunction(closure_gc) => {
+                                let new_proto = &closure_gc.proto;
+                                let new_base = func_idx + 3;
+                                self.frames.push(crate::state::CallFrame {
+                                    closure: closure_gc,
+                                    pc: 0,
+                                    base: new_base,
+                                    nresults: c as i32,
+                                    varargs: Vec::new(),
+                                });
+                                let needed_stack = new_base + new_proto.maxstacksize as usize;
+                                if self.stack.len() < needed_stack {
+                                    self.stack.resize(needed_stack, Value::Nil);
+                                }
+                                self.top = needed_stack;
+                            }
+                            _ => {
+                                return Err(LuaError::RuntimeError(
+                                    "attempt to call a non-function in TFORCALL".to_string(),
+                                ))
+                            }
+                        }
+                    }
+                    OpCode::TForLoop => {
+                        let a = inst.a() as usize;
+                        let sbx = inst.sbx();
+                        if self.stack[base + a + 3] != Value::Nil {
+                            self.stack[base + a + 2] = self.stack[base + a + 3];
                             let frame = self.frames.last_mut().unwrap();
                             frame.pc = (frame.pc as i32 + sbx) as usize;
                         }

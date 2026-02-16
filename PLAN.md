@@ -9,9 +9,9 @@ This plan outlines the steps to improve `rua` to cover an increasing amount of t
 - [x] Handle `global <const> *` syntax.
 
 ## Phase 2: String Manipulation
-- [ ] Implement missing `string` library functions required by `strings.lua` and `literals.lua`.
-- [ ] Improve string escape sequence handling in the Lexer (e.g., `\z`, hexadecimal/Unicode escapes).
-- [ ] Support long brackets `[[ ... ]]` and comments properly.
+- [x] Implement missing `string` library functions required by `strings.lua` and `literals.lua`.
+- [x] Improve string escape sequence handling in the Lexer (e.g., `\z`, hexadecimal/Unicode escapes).
+- [x] Support long brackets `[[ ... ]]` and comments properly.
 
 ## Phase 3: Table Behavior
 - [ ] Implement metamethods beyond `__index` (e.g., `__newindex`, `__call`, `__len`).
@@ -25,3 +25,14 @@ This plan outlines the steps to improve `rua` to cover an increasing amount of t
 - [ ] Implement coroutines and `coroutine` library.
 - [ ] Implement `debug` library.
 - [ ] Finalize remaining standard library functions.
+
+## Phase 6: Language Core Refinement
+- [ ] Support multiple assignment for table fields and indices.
+- [ ] Implement `break` and `goto` statements fully.
+- [ ] Support Lua patterns in `string` library.
+- [ ] Implement full Lua 5.4/5.5 standard library compatibility.
+
+## Phase 7: Performance and Optimization
+- [ ] Optimize table lookups using hybrid array/hash representation.
+- [ ] Implement basic JIT compilation for hot loops.
+- [ ] Improve garbage collector performance (incremental/generational).

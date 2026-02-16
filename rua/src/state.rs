@@ -66,6 +66,22 @@ impl LuaState {
             tbc_stack: Vec::new(),
         }
     }
+
+    pub fn push(&mut self, val: Value) {
+        if self.top >= self.stack.len() {
+            self.stack.resize(self.stack.len() * 2, Value::Nil);
+        }
+        self.stack[self.top] = val;
+        self.top += 1;
+    }
+
+    pub fn pop(&mut self) -> Value {
+        if self.top == 0 {
+            return Value::Nil;
+        }
+        self.top -= 1;
+        self.stack[self.top]
+    }
 }
 
 // LuaState must be Send but not Sync
