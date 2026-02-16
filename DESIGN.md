@@ -58,22 +58,49 @@ type AsyncCallback = Box<dyn for<'a> Fn(&'a mut LuaState) -> BoxFuture<'a, Resul
 ```
 
 ## 5. The Parser and Compiler
-A subset of the Lua 5.4 grammar will be supported initially:
-- **Syntax**: Local variables, assignments, arithmetic/logical expressions, function definitions and calls, `if` statements, `while` loops, and table constructors.
-- **Compiler**: A recursive descent parser will generate bytecode directly for the VM.
+A robust recursive descent parser has been implemented, matching Lua 5.4's expression precedence and statement structure.
+- **Supported Syntax**:
+    - Local variable declarations (`local x = 10`).
+    - Assignments (local and global).
+    - Arithmetic operations: `+`, `-`, `*`, `/`, `//`, `%`, `^`, unary `-`.
+    - Bitwise operations: `&`, `|`, `~`, `<<`, `>>`, unary `~`.
+    - Relational operations: `==`, `~=`, `<`, `>`, `<=`, `>=`.
+    - Logical operations: `not` (initial support, `and`/`or` via expression precedence).
+    - Length operator `#` and concatenation `..`.
+    - Nested scopes using `do ... end`.
+    - Function calls as statements.
+- **Compiler**: Generates Lua 5.4 compatible 32-bit instructions. Constants are stored in the prototype's constant table (`k`).
 
-## 6. Error Handling
+## 6. VM Instruction Set
+The VM now implements a subset of Lua 5.4 opcodes with the exact bit layout:
+- `OpCode` (7 bits), `A` (8 bits), `C` (9 bits), `B` (8 bits) for `iABC`.
+- `Bx` (17 bits) for `iABx`, `sBx` for `iAsBx`.
+- Supports immediate operands via the `k` bit and specialized opcodes like `LOADI`.
+
+## 7. Variables and Scoping
+- **Local Variables**: Stored on the VM stack. The compiler tracks register allocation and scope depth.
+- **Global Variables**: Handled via the `_ENV` upvalue, which points to the global table.
+- **Upvalues**: Initial support for upvalues in `Closure` objects.
+
+## 8. Current Simplifications and Limitations
+- **Tables**: Currently implemented using Rust's `HashMap<Value, Value>`. Does not yet feature the dual array/hash representation of standard Lua.
+- **Upvalues**: Simplified version; "open" upvalues (pointing to live stack slots) are not yet implemented. All upvalues are currently "closed".
+- **Metatables**: Not yet implemented.
+- **String Table**: Strings are currently allocated in the GC heap but not internalized in a global string table.
+- **Function Calls**: Lua-to-Lua calls are implemented recursively in the `execute` function.
+
+## 9. Error Handling
 Instead of C-style `longjmp`, the entire codebase will use Rust's `Result<T, LuaError>`. This ensures safety and proper stack unwinding.
 
-## 7. Concurrency Model
+## 10. Concurrency Model
 - `LuaState` is `Send`, allowing it to be moved between threads (e.g., across `tokio::spawn` points).
 - It is not `Sync`, as Lua execution is inherently single-threaded per state.
 - Multiple `LuaState`s can share a `GlobalState` if protected by appropriate synchronization, though initially, we may target a single-threaded execution model for the `GlobalState` as well (e.g., using `Rc` and `RefCell` internally if confined to one thread, or `Arc` and `Mutex` if shared).
 
-## 8. IO and Standard Library
+## 11. IO and Standard Library
 IO-bound functions (like `print`, `io.read`, etc.) will be implemented using `tokio`'s async IO traits.
 
-## 9. Implementation Plan
+## 12. Implementation Plan
 1. Define core types (`Value`, `Instruction`, `LuaError`).
 2. Implement the basic GC infrastructure.
 3. Implement the VM execution loop with a few basic opcodes.

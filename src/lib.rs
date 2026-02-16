@@ -22,19 +22,72 @@ mod tests {
             instructions: vec![
                 Instruction(1 | (0 << 7) | (0 << 15)), // LOADK R[0] K[0]
                 Instruction(1 | (1 << 7) | (1 << 15)), // LOADK R[1] K[1]
-                Instruction(2 | (2 << 7) | (0 << 16) | (1 << 24)), // ADD R[2] R[0] R[1]
+                Instruction(33 | (2 << 7) | (0 << 15) | (1 << 24)), // ADD R[2] R[0] R[1]
             ],
             k: vec![Value::Integer(10), Value::Integer(20)],
+            upvalues: vec![],
+            protos: vec![],
         };
-        let proto_gc = {
+        let closure_gc = {
             let mut global = lua.global.lock().unwrap();
-            global.heap.allocate(proto)
+            let proto_gc = global.heap.allocate(proto);
+            global.heap.allocate(crate::value::Closure {
+                proto: proto_gc,
+                upvalues: vec![],
+            })
         };
-        lua.execute(proto_gc).await.unwrap();
+        lua.execute(closure_gc).await.unwrap();
         if let Value::Integer(res) = lua.stack[2] {
             assert_eq!(res, 30);
         } else {
             panic!("Result is not an integer");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_parser_and_variables() {
+        let mut lua = LuaState::new();
+        crate::stdlib::open_libs(&mut lua);
+
+        let input = "
+            local x = 10
+            local y = 20
+            z = x + y
+        ";
+
+        let proto = {
+            let mut global = lua.global.lock().unwrap();
+            let parser = crate::parser::Parser::new(input, &mut global.heap).unwrap();
+            parser.parse_chunk().unwrap()
+        };
+
+        let closure_gc = {
+            let mut global = lua.global.lock().unwrap();
+            let globals = global.globals;
+            let proto_gc = global.heap.allocate(proto);
+            let uv = global.heap.allocate(crate::value::Upvalue { val: globals });
+            global.heap.allocate(crate::value::Closure {
+                proto: proto_gc,
+                upvalues: vec![uv],
+            })
+        };
+
+        lua.execute(closure_gc).await.unwrap();
+
+        let global_val = {
+            let mut global = lua.global.lock().unwrap();
+            if let Value::Table(t) = global.globals {
+                let z_key = Value::String(global.heap.allocate("z".to_string()));
+                *t.map.get(&z_key).unwrap_or(&Value::Nil)
+            } else {
+                panic!("Globals is not a table");
+            }
+        };
+
+        if let Value::Integer(res) = global_val {
+            assert_eq!(res, 30);
+        } else {
+            panic!("Result z is not an integer: {:?}", global_val);
         }
     }
 }

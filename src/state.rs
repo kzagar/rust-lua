@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 pub struct GlobalState {
     pub heap: GcHeap,
     pub registry: Value,
+    pub globals: Value,
 }
 
 pub struct LuaState {
@@ -23,10 +24,13 @@ pub enum ThreadStatus {
 
 impl LuaState {
     pub fn new() -> Self {
+        let mut heap = GcHeap::new();
+        let globals = Value::Table(heap.allocate(crate::value::Table::new()));
         Self {
             global: Arc::new(Mutex::new(GlobalState {
-                heap: GcHeap::new(),
+                heap,
                 registry: Value::Nil,
+                globals,
             })),
             stack: vec![Value::Nil; 256],
             pc: 0,
