@@ -40,13 +40,114 @@ pub fn lua_print(state: &mut LuaState) -> BoxFuture<'_, Result<usize, LuaError>>
     }.boxed()
 }
 
+pub fn lua_assert(state: &mut LuaState) -> BoxFuture<'_, Result<usize, LuaError>> {
+    async move {
+        let (start, end) = if let Some(frame) = state.frames.last() {
+            let inst = frame.closure.proto.instructions[frame.pc - 1];
+            let func_idx = frame.base + inst.a() as usize;
+            (func_idx + 1, state.top)
+        } else {
+            (1, state.top)
+        };
+
+        if start >= end {
+            return Err(LuaError::RuntimeError("assertion failed!".to_string()));
+        }
+
+        let val = state.stack[start];
+        match val {
+            Value::Nil | Value::Boolean(false) => {
+                let msg = if start + 1 < end {
+                    format!("{:?}", state.stack[start + 1])
+                } else {
+                    "assertion failed!".to_string()
+                };
+                Err(LuaError::RuntimeError(msg))
+            }
+            _ => {
+                // Return all arguments
+                let nres = end - start;
+                // They are already in the right place on the stack for the caller to pick up
+                // if we just return nres.
+                // Wait, standard assert returns its arguments.
+                Ok(nres)
+            }
+        }
+    }.boxed()
+}
+
+pub fn lua_load(state: &mut LuaState) -> BoxFuture<'_, Result<usize, LuaError>> {
+    async move {
+        let (start, end) = if let Some(frame) = state.frames.last() {
+            let inst = frame.closure.proto.instructions[frame.pc - 1];
+            let func_idx = frame.base + inst.a() as usize;
+            (func_idx + 1, state.top)
+        } else {
+            (1, state.top)
+        };
+
+        if start >= end {
+             return Err(LuaError::RuntimeError("load needs at least one argument".to_string()));
+        }
+
+        let input_val = state.stack[start];
+        if let Value::String(s) = input_val {
+            let res = {
+                let mut global = state.global.lock().unwrap();
+                let parser_res = crate::parser::Parser::new(&s, &mut global.heap);
+                match parser_res {
+                    Ok(parser) => parser.parse_chunk(),
+                    Err(e) => Err(e),
+                }
+            };
+
+            match res {
+                Ok(proto) => {
+                    let closure_gc = {
+                        let mut global = state.global.lock().unwrap();
+                        let globals = global.globals;
+                        let proto_gc = global.heap.allocate(proto);
+                        let uv = global.heap.allocate(crate::value::Upvalue { val: globals });
+                        global.heap.allocate(crate::value::Closure {
+                            proto: proto_gc,
+                            upvalues: vec![uv],
+                        })
+                    };
+                    state.stack[start - 1] = Value::LuaFunction(closure_gc);
+                    Ok(1)
+                }
+                Err(e) => {
+                    state.stack[start - 1] = Value::Nil;
+                    let mut global = state.global.lock().unwrap();
+                    let msg_gc = global.heap.allocate(format!("{}", e));
+                    state.stack[start] = Value::String(msg_gc);
+                    Ok(2)
+                }
+            }
+        } else {
+            state.stack[start - 1] = Value::Nil;
+            let mut global = state.global.lock().unwrap();
+            let msg_gc = global.heap.allocate("load: expected string".to_string());
+            state.stack[start] = Value::String(msg_gc);
+            Ok(2)
+        }
+    }.boxed()
+}
+
 pub fn open_libs(state: &mut LuaState) {
     let mut global = state.global.lock().unwrap();
     if let Value::Table(t_gc) = global.globals {
-        let print_key = global.heap.allocate("print".to_string());
         unsafe {
             let t = &mut (*t_gc.ptr.as_ptr()).data;
+
+            let print_key = global.heap.allocate("print".to_string());
             t.map.insert(Value::String(print_key), Value::RustFunction(lua_print));
+
+            let assert_key = global.heap.allocate("assert".to_string());
+            t.map.insert(Value::String(assert_key), Value::RustFunction(lua_assert));
+
+            let load_key = global.heap.allocate("load".to_string());
+            t.map.insert(Value::String(load_key), Value::RustFunction(lua_load));
         }
     }
 }
