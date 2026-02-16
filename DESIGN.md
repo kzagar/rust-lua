@@ -16,15 +16,17 @@ Rua is organized as a modular set of crates to keep the core interpreter lightwe
 
 - **`rua`**: The core Lua interpreter and VM.
 - **`rua-resty-http`**: Provides a Lua API for making asynchronous HTTP(S) requests, modeled after `lua-resty-http`.
+- **`rua-llm`** (Planned): High-level LLM and multi-agent orchestration integration via `swarms-rs`.
 - **`rua-sqlite`** (Planned): Asynchronous SQLite integration for persistent storage.
 - **`rua-axum`** (Planned): Integration with the Axum web framework, allowing Rua functions to be bound directly to REST endpoints.
-- **`rua-web`** (Planned): A comprehensive web server package that combines `rua`, `rua-axum`, `rua-resty-http`, and `rua-sqlite` on top of the Tokio runtime.
+- **`rua-web`** (Planned): A comprehensive web server package that combines `rua`, `rua-axum`, `rua-resty-http`, `rua-sqlite`, and `rua-llm` on top of the Tokio runtime.
 - **`rua-cli`**: A command-line interface for executing Rua scripts, including support for HTTP and SQLite integrations via Tokio.
 
 ## 4. Performance Drivers
 ### 4.1 Native Rust Primitives
 To minimize latency, common web server operations are implemented as native Rust primitives and exposed to Lua. This includes:
 - Asynchronous HTTP(S) requests.
+- LLM and Multi-Agent orchestration.
 - SQLite database interactions.
 - JSON parsing and serialization.
 By keeping these performance-critical tasks in Rust, Rua minimizes the overhead of executing complex logic within the Lua VM.
