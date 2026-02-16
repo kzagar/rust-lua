@@ -13,3 +13,7 @@ testes/libs/all
 
 temp
 lua
+/target
+target/
+Cargo.lock
+check_output.txt
