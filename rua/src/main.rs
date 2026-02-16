@@ -1,8 +1,8 @@
-use lua_rust::LuaState;
-use lua_rust::value::Value;
-use lua_rust::stdlib::{lua_print, lua_yield};
-use lua_rust::vm::{Proto, Instruction};
-use lua_rust::state::ThreadStatus;
+use rua::LuaState;
+use rua::value::Value;
+use rua::stdlib::{lua_print, lua_yield};
+use rua::vm::{Proto, Instruction};
+use rua::state::ThreadStatus;
 use tokio;
 
 #[tokio::main]
@@ -30,7 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let closure_gc = {
         let mut global = lua.global.lock().unwrap();
         let proto_gc = global.heap.allocate(proto);
-        global.heap.allocate(lua_rust::value::Closure {
+        global.heap.allocate(rua::value::Closure {
             proto: proto_gc,
             upvalues: vec![],
         })

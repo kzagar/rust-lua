@@ -1,7 +1,7 @@
 use crate::state::{LuaState, ThreadStatus};
 use crate::error::LuaError;
 use crate::value::Value;
-use crate::gc::{Trace, GcBoxHeader};
+use crate::gc::{GCTrace, GcBoxHeader};
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -140,7 +140,7 @@ pub struct Proto {
     pub maxstacksize: u8,
 }
 
-impl Trace for Proto {
+impl GCTrace for Proto {
     fn trace(&self, marked: &mut HashSet<*const GcBoxHeader>) {
         for val in &self.k {
             val.trace(marked);
@@ -265,6 +265,63 @@ impl LuaState {
         }
     }
 
+    async fn get_table_internal(&mut self, t: Value, key: Value) -> Result<Value, LuaError> {
+        let mut curr_t = t;
+        for _ in 0..100 { // Limit metatable chain
+            let mt = match curr_t {
+                Value::Table(table_gc) => {
+                    if let Some(val) = table_gc.map.get(&key) {
+                        if *val != Value::Nil {
+                            return Ok(*val);
+                        }
+                    }
+                    table_gc.metatable
+                }
+                Value::UserData(ud_gc) => ud_gc.metatable,
+                _ => return Err(LuaError::RuntimeError("attempt to index a non-table value".to_string())),
+            };
+
+            if let Some(mt_table_gc) = mt {
+                let index_key = {
+                    let mut global = self.global.lock().unwrap();
+                    Value::String(global.heap.allocate("__index".to_string()))
+                };
+                let h = *mt_table_gc.map.get(&index_key).unwrap_or(&Value::Nil);
+                match h {
+                    Value::Nil => return Ok(Value::Nil),
+                    Value::Table(_) | Value::UserData(_) => {
+                        curr_t = h;
+                        continue;
+                    }
+                    Value::RustFunction(f) => {
+                        // Call metamethod
+                        // This is tricky because we are in an async function but not the main loop.
+                        // For now, let's just support table/userdata __index.
+                        // Supporting function __index requires pushing a new frame or calling f directly.
+                        // Let's try calling f directly.
+                        // We need to set up the stack for f.
+                        let old_top = self.top;
+                        self.stack.resize(old_top + 2, Value::Nil);
+                        self.stack[old_top] = t;
+                        self.stack[old_top + 1] = key;
+                        self.top = old_top + 2;
+                        let nres = f(self).await?;
+                        let res = if nres > 0 { self.stack[self.top - nres] } else { Value::Nil };
+                        self.top = old_top;
+                        return Ok(res);
+                    }
+                    Value::LuaFunction(_) => {
+                        return Err(LuaError::RuntimeError("Lua function metamethods not yet supported in GETTABLE".to_string()));
+                    }
+                    _ => return Err(LuaError::RuntimeError("invalid __index metamethod".to_string())),
+                }
+            } else {
+                return Ok(Value::Nil);
+            }
+        }
+        Err(LuaError::RuntimeError("metatable chain too long".to_string()))
+    }
+
     pub fn execute(&mut self, closure_gc: crate::gc::Gc<crate::value::Closure>) -> futures::future::BoxFuture<'_, Result<(), LuaError>> {
         self.frames.push(crate::state::CallFrame {
             closure: closure_gc,
@@ -354,17 +411,52 @@ impl LuaState {
                         let b = inst.b() as usize;
                         let c = inst.c() as usize;
                         let frame = self.frames.last().unwrap();
-                        let env = &*frame.closure.upvalues[b];
-                        if let Value::Table(t) = env.val {
-                            let key = if inst.k() {
-                                frame.closure.proto.k[c >> 1]
-                            } else {
-                                self.stack[base + c]
-                            };
-                            self.stack[base + a] = *t.map.get(&key).unwrap_or(&Value::Nil);
+                        let env = frame.closure.upvalues[b].val;
+                        let key = if inst.k() {
+                            frame.closure.proto.k[c >> 1]
                         } else {
-                            return Err(LuaError::RuntimeError("GETTABUP: env is not a table".to_string()));
-                        }
+                            self.stack[base + c]
+                        };
+                        self.stack[base + a] = self.get_table_internal(env, key).await?;
+                    }
+                    11 => { // GETTABLE
+                        let a = inst.a() as usize;
+                        let b = inst.b() as usize;
+                        let c = inst.c() as usize;
+                        let t = self.stack[base + b];
+                        let key = self.stack[base + c];
+                        self.stack[base + a] = self.get_table_internal(t, key).await?;
+                    }
+                    12 => { // GETI
+                        let a = inst.a() as usize;
+                        let b = inst.b() as usize;
+                        let c = inst.c() as usize;
+                        let t = self.stack[base + b];
+                        let key = Value::Integer(c as i64);
+                        self.stack[base + a] = self.get_table_internal(t, key).await?;
+                    }
+                    13 => { // GETFIELD
+                        let a = inst.a() as usize;
+                        let b = inst.b() as usize;
+                        let c = inst.c() as usize;
+                        let t = self.stack[base + b];
+                        let frame = self.frames.last().unwrap();
+                        let key = frame.closure.proto.k[c];
+                        self.stack[base + a] = self.get_table_internal(t, key).await?;
+                    }
+                    19 => { // SELF
+                        let a = inst.a() as usize;
+                        let b = inst.b() as usize;
+                        let c = inst.c() as usize;
+                        let t = self.stack[base + b];
+                        self.stack[base + a + 1] = t;
+                        let frame = self.frames.last().unwrap();
+                        let key = if inst.k() {
+                            frame.closure.proto.k[c >> 1]
+                        } else {
+                            self.stack[base + c]
+                        };
+                        self.stack[base + a] = self.get_table_internal(t, key).await?;
                     }
                     14 => { // SETTABUP
                         let a = inst.a() as usize;

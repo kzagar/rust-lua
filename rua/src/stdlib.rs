@@ -21,6 +21,7 @@ pub fn lua_print(state: &mut LuaState) -> BoxFuture<'_, Result<usize, LuaError>>
                 Value::Table(_) => print!("table\t"),
                 Value::LuaFunction(_) => print!("function\t"),
                 Value::RustFunction(_) => print!("function\t"),
+                Value::UserData(_) => print!("userdata\t"),
             }
             i += 1;
         }
