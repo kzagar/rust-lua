@@ -20,6 +20,8 @@ use std::time::Duration;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tower_http::services::ServeDir;
+use futures::stream::FuturesUnordered;
+use futures::StreamExt;
 
 struct Database {
     pool: sqlx::SqlitePool,
@@ -238,6 +240,13 @@ fn register_modules(lua: &Lua, app_state: Arc<Mutex<AppState>>) -> LuaResult<()>
         Ok(Uuid::new_v4().to_string())
     })?;
     lua.globals().set("uuid", uuid_func)?;
+
+    // Register wait function
+    let wait_func = lua.create_async_function(|_, seconds: f64| async move {
+        tokio::time::sleep(std::time::Duration::from_secs_f64(seconds)).await;
+        Ok(())
+    })?;
+    lua.globals().set("wait", wait_func)?;
 
     // Register http module (lua-resty-http compatible)
     let http = lua.create_table()?;
@@ -506,39 +515,64 @@ async fn main() -> LuaResult<()> {
 
                         if let Some(_guard) = server_guard_opt {
                              println!("Server running. Waiting for changes...");
-                             loop {
-                                tokio::select! {
-                                    Some(req) = req_rx.recv() => {
-                                        // Handle request
-                                        let (func, params, response_tx) = {
-                                            let state = app_state.lock().unwrap();
-                                            let route = &state.routes[req.callback_id];
-                                            let func: LuaFunction = lua.registry_value(&route.callback_key)?;
-                                            (func, req.params, req.response_tx)
-                                        };
+                                let mut pending_requests = FuturesUnordered::new();
+                                loop {
+                                    tokio::select! {
+                                        Some(req) = req_rx.recv() => {
+                                            // Handle request
+                                            // We do the setup synchronously to fail fast if registry lookup fails
+                                            // and to capture necessary data for the future
+                                            let func_res: LuaResult<LuaFunction> = {
+                                                let state = app_state.lock().unwrap();
+                                                if req.callback_id >= state.routes.len() {
+                                                     Err(LuaError::RuntimeError("Invalid callback ID".into()))
+                                                } else {
+                                                    let route = &state.routes[req.callback_id];
+                                                    let func: LuaFunction = lua.registry_value(&route.callback_key)?;
+                                                    Ok(func)
+                                                }
+                                            };
 
-                                         // Use scoped block to handle Lua/Result interactions
-                                        let res: LuaResult<JsonValue> = (async {
-                                            let params_table = lua.create_table()?;
-                                            for (k, v) in params {
-                                                params_table.set(k, v)?;
+                                            match func_res {
+                                                Ok(func) => {
+                                                    let params = req.params;
+                                                    let response_tx = req.response_tx;
+                                                    let lua_ref = &lua;
+                                                    
+                                                    // Create future for the request
+                                                    let fut = async move {
+                                                        let res: LuaResult<JsonValue> = (async {
+                                                            let params_table = lua_ref.create_table()?;
+                                                            for (k, v) in params {
+                                                                params_table.set(k, v)?;
+                                                            }
+                                                            let val: LuaValue = func.call_async(params_table).await?;
+                                                            let json_val: JsonValue = lua_ref.from_value(val)?;
+                                                            Ok(json_val)
+                                                        }).await;
+
+                                                        match res {
+                                                            Ok(val) => { response_tx.send(Ok(val)).ok(); },
+                                                            Err(e) => { response_tx.send(Err(e.to_string())).ok(); }
+                                                        }
+                                                    };
+                                                    pending_requests.push(fut);
+                                                },
+                                                Err(e) => {
+                                                    // Send error immediately if setup failed
+                                                    req.response_tx.send(Err(e.to_string())).ok();
+                                                }
                                             }
-                                            let val: LuaValue = func.call_async(params_table).await?;
-                                            let json_val: JsonValue = lua.from_value(val)?;
-                                            Ok(json_val)
-                                        }).await;
-
-                                        match res {
-                                            Ok(val) => { response_tx.send(Ok(val)).ok(); },
-                                            Err(e) => { response_tx.send(Err(e.to_string())).ok(); }
+                                        }
+                                        Some(_) = pending_requests.next() => {
+                                            // A request finished
+                                        }
+                                        _ = rx.recv() => {
+                                            println!("Reload signal received.");
+                                            break; // Break inner loop to reload
                                         }
                                     }
-                                    _ = rx.recv() => {
-                                        println!("Reload signal received.");
-                                        break; // Break inner loop to reload
-                                    }
                                 }
-                             }
                         } else {
                             // Server failed to start
                              println!("Waiting for changes to {}...", path_str);

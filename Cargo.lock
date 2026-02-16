@@ -1371,6 +1371,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "axum-server",
+ "futures",
  "mlua",
  "notify-debouncer-mini",
  "reqwest 0.13.2",

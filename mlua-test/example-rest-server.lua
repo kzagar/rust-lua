@@ -58,6 +58,16 @@ srv:register("/api/users", "POST", function(params)
     return new_user
 end)
 
+srv:register("/api/wait", "GET", function(params)
+    local seconds = tonumber(params.seconds) or 1.0
+    print("Waiting for " .. seconds .. " seconds...")
+    wait(seconds)
+    return {
+        message = "Waited for " .. seconds .. " seconds",
+        seconds = seconds
+    }
+end)
+
 -- Register another endpoint
 srv:register("/api/hello", "GET", function(params)
     local name = params.name or "World"
