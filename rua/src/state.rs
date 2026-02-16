@@ -1,5 +1,5 @@
-use crate::value::{Value, Closure};
-use crate::gc::{GcHeap, Gc};
+use crate::gc::{Gc, GcHeap};
+use crate::value::{Closure, Value};
 use std::sync::{Arc, Mutex};
 
 pub struct GlobalState {
@@ -22,6 +22,7 @@ pub struct LuaState {
     pub top: usize,
     pub frames: Vec<CallFrame>,
     pub status: ThreadStatus,
+    pub tbc_stack: Vec<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -51,6 +52,7 @@ impl LuaState {
             top: 0,
             frames: Vec::new(),
             status: ThreadStatus::Ok,
+            tbc_stack: Vec::new(),
         }
     }
 
@@ -61,6 +63,7 @@ impl LuaState {
             top: 0,
             frames: Vec::new(),
             status: ThreadStatus::Ok,
+            tbc_stack: Vec::new(),
         }
     }
 }
