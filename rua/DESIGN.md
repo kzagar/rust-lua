@@ -24,9 +24,9 @@ pub enum Value {
     Number(f64),
     String(Gc<String>),
     Table(Gc<Table>),
-    Function(Gc<Closure>),
-    UserData(Gc<Box<dyn Any + Send>>),
-    Thread(Gc<LuaState>),
+    LuaFunction(Gc<Closure>),
+    RustFunction(AsyncCallback),
+    UserData(Gc<UserData>),
 }
 ```
 
@@ -90,8 +90,15 @@ The VM now implements a subset of Lua 5.4 opcodes with the exact bit layout:
 ## 8. Current Simplifications and Limitations
 - **Tables**: Currently implemented using Rust's `HashMap<Value, Value>`. Does not yet feature the dual array/hash representation of standard Lua.
 - **Upvalues**: Capture values from the stack at closure creation. "Open" upvalues that track live stack slots are not yet implemented; however, upvalues are mutable and shared among closures.
-- **Metatables**: Not yet implemented.
+- **Metatables**: Basic support for `__index` metamethod has been implemented to support object-oriented style calls.
 - **String Table**: Strings are currently allocated in the GC heap but not internalized in a global string table.
+
+## 13. Extensions
+### 13.1 UserData and Metatables
+The VM supports `UserData` for wrapping Rust types. `UserData` can have metatables, allowing them to behave like objects in Lua. The `__index` metamethod is currently supported for both Tables and UserData.
+
+### 13.2 HTTP Client (rua-resty-http)
+A separate crate `rua-resty-http` provides a Lua API for making HTTP requests, modeled after `lua-resty-http`. It uses `reqwest` and integrates with the async VM loop.
 
 ## 9. Error Handling
 Instead of C-style `longjmp`, the entire codebase will use Rust's `Result<T, LuaError>`. This ensures safety and proper stack unwinding.

@@ -1,9 +1,6 @@
-[package]
-name = "lua-rust"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-tokio = { version = "1", features = ["full"] }
-futures = "0.3"
-thiserror = "1.0"
+[workspace]
+members = [
+    "rua",
+    "rua-resty-http",
+]
+resolver = "2"

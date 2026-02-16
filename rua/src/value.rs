@@ -1,12 +1,36 @@
-use crate::gc::{Gc, Trace, GcBoxHeader};
+use crate::gc::{Gc, GCTrace, GcBoxHeader};
 use std::collections::{HashSet, HashMap};
 use crate::vm::Proto;
 use futures::future::BoxFuture;
 use crate::error::LuaError;
 use crate::state::LuaState;
 use std::hash::{Hash, Hasher};
+use std::any::Any;
 
 pub type AsyncCallback = for<'a> fn(&'a mut LuaState) -> BoxFuture<'a, Result<usize, LuaError>>;
+
+pub trait LuaUserData: GCTrace + Any + Send {
+    fn as_any(&self) -> &dyn Any;
+    fn as_any_mut(&mut self) -> &mut dyn Any;
+}
+
+pub struct UserData {
+    pub data: Box<dyn LuaUserData>,
+    pub metatable: Option<Gc<Table>>,
+}
+
+impl GCTrace for UserData {
+    fn trace(&self, marked: &mut HashSet<*const GcBoxHeader>) {
+        self.data.trace(marked);
+        if let Some(mt) = self.metatable {
+            let header_ptr = unsafe { &mt.ptr.as_ref().header as *const GcBoxHeader };
+            if !marked.contains(&header_ptr) {
+                marked.insert(header_ptr);
+                mt.trace(marked);
+            }
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub enum Value {
@@ -18,6 +42,7 @@ pub enum Value {
     Table(Gc<Table>),
     LuaFunction(Gc<Closure>),
     RustFunction(AsyncCallback),
+    UserData(Gc<UserData>),
 }
 
 impl PartialEq for Value {
@@ -31,6 +56,7 @@ impl PartialEq for Value {
             (Value::Table(a), Value::Table(b)) => a.ptr == b.ptr,
             (Value::LuaFunction(a), Value::LuaFunction(b)) => a.ptr == b.ptr,
             (Value::RustFunction(a), Value::RustFunction(b)) => *a as usize == *b as usize,
+            (Value::UserData(a), Value::UserData(b)) => a.ptr == b.ptr,
             (Value::Integer(a), Value::Number(b)) => *a as f64 == *b,
             (Value::Number(a), Value::Integer(b)) => *a == *b as f64,
             _ => false,
@@ -57,11 +83,12 @@ impl Hash for Value {
             Value::Table(t) => t.ptr.as_ptr().hash(state),
             Value::LuaFunction(f) => f.ptr.as_ptr().hash(state),
             Value::RustFunction(f) => (*f as usize).hash(state),
+            Value::UserData(u) => u.ptr.as_ptr().hash(state),
         }
     }
 }
 
-impl Trace for Value {
+impl GCTrace for Value {
     fn trace(&self, marked: &mut HashSet<*const GcBoxHeader>) {
         match self {
             Value::String(s) => {
@@ -85,6 +112,13 @@ impl Trace for Value {
                     f.trace(marked);
                 }
             }
+            Value::UserData(u) => {
+                let header_ptr = unsafe { &u.ptr.as_ref().header as *const GcBoxHeader };
+                if !marked.contains(&header_ptr) {
+                    marked.insert(header_ptr);
+                    u.trace(marked);
+                }
+            }
             _ => {}
         }
     }
@@ -92,19 +126,27 @@ impl Trace for Value {
 
 pub struct Table {
     pub map: HashMap<Value, Value>,
+    pub metatable: Option<Gc<Table>>,
 }
 
 impl Table {
     pub fn new() -> Self {
-        Self { map: HashMap::new() }
+        Self { map: HashMap::new(), metatable: None }
     }
 }
 
-impl Trace for Table {
+impl GCTrace for Table {
     fn trace(&self, marked: &mut HashSet<*const GcBoxHeader>) {
         for (k, v) in &self.map {
             k.trace(marked);
             v.trace(marked);
+        }
+        if let Some(mt) = self.metatable {
+            let header_ptr = unsafe { &mt.ptr.as_ref().header as *const GcBoxHeader };
+            if !marked.contains(&header_ptr) {
+                marked.insert(header_ptr);
+                mt.trace(marked);
+            }
         }
     }
 }
@@ -114,7 +156,7 @@ pub struct Closure {
     pub upvalues: Vec<Gc<Upvalue>>,
 }
 
-impl Trace for Closure {
+impl GCTrace for Closure {
     fn trace(&self, marked: &mut HashSet<*const GcBoxHeader>) {
         let proto_header = unsafe { &self.proto.ptr.as_ref().header as *const GcBoxHeader };
         if !marked.contains(&proto_header) {
@@ -135,7 +177,7 @@ pub struct Upvalue {
     pub val: Value,
 }
 
-impl Trace for Upvalue {
+impl GCTrace for Upvalue {
     fn trace(&self, marked: &mut HashSet<*const GcBoxHeader>) {
         self.val.trace(marked);
     }
