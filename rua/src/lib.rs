@@ -1,27 +1,27 @@
-pub mod value;
-pub mod gc;
-pub mod state;
-pub mod vm;
-pub mod parser;
 pub mod error;
+pub mod gc;
+pub mod parser;
+pub mod state;
 pub mod stdlib;
+pub mod value;
+pub mod vm;
 
-pub use state::LuaState;
 pub use error::LuaError;
+pub use state::LuaState;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::value::Value;
-    use crate::vm::{Proto, Instruction};
+    use crate::vm::{Instruction, Proto};
 
     #[tokio::test]
     async fn test_basic_vm() {
         let mut lua = LuaState::new();
         let proto = Proto {
             instructions: vec![
-                Instruction(1), // LOADK R[0] K[0]
-                Instruction(1 | (1 << 7) | (1 << 15)), // LOADK R[1] K[1]
+                Instruction(1),                         // LOADK R[0] K[0]
+                Instruction(1 | (1 << 7) | (1 << 15)),  // LOADK R[1] K[1]
                 Instruction(33 | (2 << 7) | (1 << 24)), // ADD R[2] R[0] R[1]
             ],
             k: vec![Value::Integer(10), Value::Integer(20)],
@@ -60,7 +60,7 @@ mod tests {
 
         let proto = {
             let mut global = lua.global.lock().unwrap();
-            let parser = crate::parser::Parser::new(input, &mut global.heap).unwrap();
+            let parser = crate::parser::Parser::new(input.as_bytes(), &mut global.heap).unwrap();
             parser.parse_chunk().unwrap()
         };
 
@@ -108,7 +108,7 @@ mod tests {
 
         let proto = {
             let mut global = lua.global.lock().unwrap();
-            let parser = crate::parser::Parser::new(input, &mut global.heap).unwrap();
+            let parser = crate::parser::Parser::new(input.as_bytes(), &mut global.heap).unwrap();
             parser.parse_chunk().unwrap()
         };
 
@@ -157,7 +157,7 @@ mod tests {
 
         let proto = {
             let mut global = lua.global.lock().unwrap();
-            let parser = crate::parser::Parser::new(input, &mut global.heap).unwrap();
+            let parser = crate::parser::Parser::new(input.as_bytes(), &mut global.heap).unwrap();
             parser.parse_chunk().unwrap()
         };
 
@@ -205,7 +205,7 @@ mod tests {
 
         let proto = {
             let mut global = lua.global.lock().unwrap();
-            let parser = crate::parser::Parser::new(input, &mut global.heap).unwrap();
+            let parser = crate::parser::Parser::new(input.as_bytes(), &mut global.heap).unwrap();
             parser.parse_chunk().unwrap()
         };
 
@@ -246,7 +246,7 @@ mod tests {
         ";
         let proto = {
             let mut global = lua.global.lock().unwrap();
-            let parser = crate::parser::Parser::new(input, &mut global.heap).unwrap();
+            let parser = crate::parser::Parser::new(input.as_bytes(), &mut global.heap).unwrap();
             parser.parse_chunk().unwrap()
         };
 

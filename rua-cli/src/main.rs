@@ -17,7 +17,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     // Read Lua file
-    let input = fs::read_to_string(&args.file)?;
+    let input = fs::read(&args.file)?;
 
     let mut lua = LuaState::new();
     
