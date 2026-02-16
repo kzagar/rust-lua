@@ -23,6 +23,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // Open standard libraries (print, etc.)
     rua::stdlib::open_libs(&mut lua);
+    
+    // Register rua-resty-http
+    rua_resty_http::register(&mut lua);
 
     // Parse the Lua script
     let proto = {

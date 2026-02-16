@@ -547,8 +547,17 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_call(&mut self, func_reg: usize, nresults: i32) -> Result<(), LuaError> {
+        self.parse_call_internal(func_reg, nresults, false)
+    }
+
+    fn parse_call_internal(&mut self, func_reg: usize, nresults: i32, has_self: bool) -> Result<(), LuaError> {
         self.expect(Token::LParen)?;
-        let mut arg_count = 0;
+        
+        if has_self {
+            self.current_state().push_reg(); // Reserve space for 'self' which is already in func_reg + 1
+        }
+
+        let mut arg_count = if has_self { 1 } else { 0 };
         let mut vararg_call = false;
         if self.peek() != &Token::RParen {
             loop {
@@ -826,8 +835,37 @@ impl<'a> Parser<'a> {
             }
             Token::Name(name) => {
                 self.emit_load(name, dest_reg)?;
-                while self.peek() == &Token::LParen {
-                    self.parse_call(dest_reg, 1)?;
+                loop {
+                    match self.peek() {
+                        Token::LParen => {
+                            self.parse_call(dest_reg, 1)?;
+                        }
+                        Token::Dot => {
+                            self.consume()?;
+                            if let Token::Name(field) = self.consume()? {
+                                let s_gc = self.heap.allocate(field);
+                                let k_field = self.current_state().add_k(Value::String(s_gc));
+                                // GETFIELD A B C (GETFIELD R[A] R[B] K[C])
+                                self.emit(OpCode::GetField as u32 | ((dest_reg as u32) << 7) | ((dest_reg as u32) << 24) | ((k_field as u32) << 15));
+                            } else {
+                                return Err(LuaError::SyntaxError("expected name after dot".to_string()));
+                            }
+                        }
+                        Token::Colon => {
+                            self.consume()?;
+                            if let Token::Name(method) = self.consume()? {
+                                let s_gc = self.heap.allocate(method);
+                                let k_method = self.current_state().add_k(Value::String(s_gc));
+                                // SELF A B C (SELF R[A] R[B] K[C]) -> R[A+1]=R[B], R[A]=R[B][K[C]]
+                                // Note: we use k=1 by shifted C and ORing with (1 << 15)
+                                self.emit(OpCode::SelfOp as u32 | ((dest_reg as u32) << 7) | ((dest_reg as u32) << 24) | ((k_method as u32) << 16) | (1 << 15));
+                                self.parse_call_internal(dest_reg, 1, true)?;
+                            } else {
+                                return Err(LuaError::SyntaxError("expected name after colon".to_string()));
+                            }
+                        }
+                        _ => break,
+                    }
                 }
             }
             Token::Dots => {
