@@ -6,8 +6,13 @@ This document outlines the design for porting the Lua VM to Rust with native `as
 ## 2. Core Architecture
 
 ### 2.1 LuaState and GlobalState
-- **`LuaState`**: Represents a Lua thread (coroutine). It contains its own execution stack and call information. It will be `Send` but not `Sync`.
+- **`LuaState`**: Represents a Lua thread (coroutine). It contains its own execution stack and a stack of `CallFrame`s. It is `Send` but not `Sync`.
 - **`GlobalState`**: Contains data shared across all `LuaState` instances within the same environment, such as the string table, global environment, and the Garbage Collector (GC) heap.
+
+### 2.2 Call Frames
+The VM uses a call stack of `CallFrame`s to manage function execution.
+- **`CallFrame`**: Stores the active `Closure`, the program counter (`pc`), the stack `base` (index where local registers start), and the number of expected results (`nresults`).
+- This architecture allows for non-recursive Lua-to-Lua calls and proper register isolation.
 
 ### 2.2 Value Representation
 Lua values will be represented by an idiomatic Rust `enum`:
@@ -84,10 +89,9 @@ The VM now implements a subset of Lua 5.4 opcodes with the exact bit layout:
 
 ## 8. Current Simplifications and Limitations
 - **Tables**: Currently implemented using Rust's `HashMap<Value, Value>`. Does not yet feature the dual array/hash representation of standard Lua.
-- **Upvalues**: Simplified version; "open" upvalues (pointing to live stack slots) are not yet implemented. All upvalues are currently "closed".
+- **Upvalues**: Capture values from the stack at closure creation. "Open" upvalues that track live stack slots are not yet implemented; however, upvalues are mutable and shared among closures.
 - **Metatables**: Not yet implemented.
 - **String Table**: Strings are currently allocated in the GC heap but not internalized in a global string table.
-- **Function Calls**: Lua-to-Lua calls are implemented recursively in the `execute` function.
 
 ## 9. Error Handling
 Instead of C-style `longjmp`, the entire codebase will use Rust's `Result<T, LuaError>`. This ensures safety and proper stack unwinding.

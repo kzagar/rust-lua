@@ -22,6 +22,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         k: vec![],
         upvalues: vec![],
         protos: vec![],
+        numparams: 0,
+        is_vararg: false,
+        maxstacksize: 2,
     };
 
     let closure_gc = {
@@ -41,7 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if lua.status == ThreadStatus::Yield {
         println!("Lua VM yielded! Resuming...");
-        lua.execute(closure_gc).await?;
+        lua.resume().await?;
     }
 
     println!("Lua VM finished");
