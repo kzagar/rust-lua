@@ -14,21 +14,40 @@ db:exec([[
     )
 ]])
 
--- Insert some entries with random strings
-print("Inserting entries...")
-for i = 1, 5 do
-    local name = "User_" .. uuid():sub(1, 8)
-    local data = uuid()
-    db:exec(string.format("INSERT INTO test_table (name, data) VALUES ('%s', '%s')", name, data))
+-- Use ORM-like API to add objects
+print("\nInserting entries using ORM API...")
+for i = 1, 3 do
+    local name = "PremiumUser_" .. uuid():sub(1, 4)
+    local data = "Some secret data " .. i
+    
+    -- Create a new object for 'test_table'
+    local obj = new_object("test_table", {
+        name = name,
+        data = data
+    })
+    
+    -- Add it to the database
+    db:add(obj)
+    print("Added: " .. name)
 end
 
--- Query the table
-print("Querying entries:")
-local row_iter = db:rows("SELECT id, name, data FROM test_table ORDER BY id DESC LIMIT 10")
-for row in row_iter do
-    print(string.format("[%d] Name: %s, Data: %s", row.id, row.name, row.data))
+-- Query objects with filters
+print("\nQuerying objects with 'like' filter (name starts with 'Premium'):")
+local results = db:objects("test_table", { name = like("Premium%") })
+for _, obj in ipairs(results) do
+    print(string.format("ID: %d, Name: %s, Data: %s", obj.id, obj.name, obj.data))
+end
+
+-- Combined filters (e.g., ID greater than 0)
+print("\nQuerying objects with combined filters (name like '%User%' and id > 5):")
+local results2 = db:objects("test_table", { 
+    name = like("%Premi%"),
+    id = gt(5)
+})
+for _, obj in ipairs(results2 or {}) do
+    print(string.format("Found: [%d] %s", obj.id, obj.name))
 end
 
 -- Close database
 db:close()
-print("Database closed.")
+print("\nDatabase closed.")

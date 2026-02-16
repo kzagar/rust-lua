@@ -16,6 +16,7 @@ axum-server = { version = "0.7.1", features = ["tls-rustls"] }
 rustls-pemfile = "2.2.0"
 notify-debouncer-mini = "0.6.0"
 futures = "0.3.32"
+tokio-cron-scheduler = "0.15.1"
 
 [profile.release]
 opt-level = "z"
