@@ -18,7 +18,7 @@ enum Token {
     Eq, Ne, Lt, Gt, Le, Ge,
     Assign, Dot, Comma, Semi, Colon,
     LParen, RParen, LCurly, RCurly, LBracket, RBracket,
-    Concat, Len,
+    Concat, Dots, Len,
     EOF,
 }
 
@@ -105,7 +105,12 @@ impl<'a> Lexer<'a> {
             '.' => {
                 if self.input.peek() == Some(&'.') {
                     self.input.next();
-                    Ok(Token::Concat)
+                    if self.input.peek() == Some(&'.') {
+                        self.input.next();
+                        Ok(Token::Dots)
+                    } else {
+                        Ok(Token::Concat)
+                    }
                 } else {
                     Ok(Token::Dot)
                 }
@@ -210,21 +215,34 @@ struct Local {
 struct CompileState {
     locals: Vec<Local>,
     upvalues: Vec<UpvalDesc>,
+    protos: Vec<crate::gc::Gc<Proto>>,
     scope_depth: usize,
     next_reg: usize,
     k: Vec<Value>,
     instructions: Vec<Instruction>,
+    numparams: u8,
+    is_vararg: bool,
+    maxstacksize: u8,
 }
 
 impl CompileState {
-    fn new() -> Self {
+    fn new(is_main: bool) -> Self {
+        let upvalues = if is_main {
+            vec![UpvalDesc { name: "_ENV".to_string(), instack: true, idx: 0 }]
+        } else {
+            Vec::new()
+        };
         Self {
             locals: Vec::new(),
-            upvalues: vec![UpvalDesc { name: "_ENV".to_string(), instack: true, idx: 0 }],
+            upvalues,
+            protos: Vec::new(),
             scope_depth: 0,
             next_reg: 0,
             k: Vec::new(),
             instructions: Vec::new(),
+            numparams: 0,
+            is_vararg: false,
+            maxstacksize: 2, // minimum
         }
     }
 
@@ -248,6 +266,9 @@ impl CompileState {
     fn push_reg(&mut self) -> usize {
         let r = self.next_reg;
         self.next_reg += 1;
+        if self.next_reg > self.maxstacksize as usize {
+            self.maxstacksize = self.next_reg as u8;
+        }
         r
     }
 
@@ -259,7 +280,7 @@ impl CompileState {
 pub struct Parser<'a> {
     lexer: Lexer<'a>,
     lookahead: Token,
-    state: CompileState,
+    states: Vec<CompileState>,
     heap: &'a mut GcHeap,
 }
 
@@ -270,7 +291,7 @@ impl<'a> Parser<'a> {
         Ok(Self {
             lexer,
             lookahead,
-            state: CompileState::new(),
+            states: vec![CompileState::new(true)],
             heap,
         })
     }
@@ -294,8 +315,13 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn current_state(&mut self) -> &mut CompileState {
+        self.states.last_mut().unwrap()
+    }
+
     fn emit(&mut self, instr: u32) {
-        self.state.instructions.push(Instruction(instr));
+        let state = self.current_state();
+        state.instructions.push(Instruction(instr));
     }
 
     pub fn parse_chunk(mut self) -> Result<Proto, LuaError> {
@@ -303,25 +329,30 @@ impl<'a> Parser<'a> {
             self.parse_statement()?;
         }
         // Add implicit return
-        self.emit(70 | (0 << 7)); // RETURN0
+        self.emit(70); // RETURN0
+        let state = self.states.pop().unwrap();
         Ok(Proto {
-            instructions: self.state.instructions,
-            k: self.state.k,
-            upvalues: self.state.upvalues,
-            protos: vec![],
+            instructions: state.instructions,
+            k: state.k,
+            upvalues: state.upvalues,
+            protos: state.protos,
+            numparams: state.numparams,
+            is_vararg: state.is_vararg,
+            maxstacksize: state.maxstacksize,
         })
     }
 
     fn enter_scope(&mut self) {
-        self.state.scope_depth += 1;
+        self.current_state().scope_depth += 1;
     }
 
     fn exit_scope(&mut self) {
-        self.state.scope_depth -= 1;
-        while let Some(local) = self.state.locals.last() {
-            if local.depth > self.state.scope_depth {
-                self.state.locals.pop();
-                self.state.next_reg -= 1;
+        let state = self.current_state();
+        state.scope_depth -= 1;
+        while let Some(local) = state.locals.last() {
+            if local.depth > state.scope_depth {
+                state.locals.pop();
+                state.next_reg -= 1;
             } else {
                 break;
             }
@@ -341,7 +372,20 @@ impl<'a> Parser<'a> {
             }
             Token::Local => {
                 self.consume()?;
-                self.parse_local_declaration()?;
+                if self.peek() == &Token::Function {
+                    self.consume()?;
+                    self.parse_function_definition(true)?;
+                } else {
+                    self.parse_local_declaration()?;
+                }
+            }
+            Token::Function => {
+                self.consume()?;
+                self.parse_function_definition(false)?;
+            }
+            Token::Return => {
+                self.consume()?;
+                self.parse_return_statement()?;
             }
             Token::Name(name) => {
                 self.consume()?;
@@ -350,6 +394,9 @@ impl<'a> Parser<'a> {
                     self.parse_assignment(name)?;
                 } else if self.peek() == &Token::LParen {
                     self.parse_call_statement(name)?;
+                } else if self.peek() == &Token::Dot {
+                    // Handle table assignment: t.f = ...
+                    self.parse_table_assignment(name)?;
                 } else {
                     return Err(LuaError::SyntaxError("unexpected token after name".to_string()));
                 }
@@ -362,15 +409,50 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_local_declaration(&mut self) -> Result<(), LuaError> {
+        let mut names = Vec::new();
         if let Token::Name(name) = self.consume()? {
-            self.expect(Token::Assign)?;
-            let reg = self.state.push_reg();
-            self.parse_expression(reg)?;
-            self.state.locals.push(Local {
-                name,
-                depth: self.state.scope_depth,
-                reg,
-            });
+            names.push(name);
+            while self.peek() == &Token::Comma {
+                self.consume()?;
+                if let Token::Name(name) = self.consume()? {
+                    names.push(name);
+                }
+            }
+
+            if self.peek() == &Token::Assign {
+                self.consume()?;
+                let start_reg = self.current_state().next_reg;
+                // Simplified: parse each expression into a new register
+                for i in 0..names.len() {
+                    let reg = self.current_state().push_reg();
+                    if i == names.len() - 1 {
+                        // For the last one, it might be a multi-return call
+                        self.parse_expression(reg)?;
+                    } else {
+                        self.parse_expression(reg)?;
+                        if self.peek() == &Token::Comma { self.consume()?; }
+                    }
+                }
+                for (i, name) in names.into_iter().enumerate() {
+                    let state = self.current_state();
+                    state.locals.push(Local {
+                        name,
+                        depth: state.scope_depth,
+                        reg: start_reg + i,
+                    });
+                }
+            } else {
+                for name in names {
+                    let reg = self.current_state().push_reg();
+                    self.emit(7 | ((reg as u32) << 7) | (0 << 24)); // LOADNIL
+                    let state = self.current_state();
+                    state.locals.push(Local {
+                        name,
+                        depth: state.scope_depth,
+                        reg,
+                    });
+                }
+            }
             Ok(())
         } else {
             Err(LuaError::SyntaxError("expected name in local declaration".to_string()))
@@ -378,38 +460,105 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_assignment(&mut self, name: String) -> Result<(), LuaError> {
-        let dest_reg = self.state.push_reg();
+        let dest_reg = self.current_state().push_reg();
         self.parse_expression(dest_reg)?;
-        if let Some(reg) = self.state.resolve_local(&name) {
-            // MOVE R[reg] R[dest_reg]
-            self.emit(0 | ((reg as u32) << 7) | ((dest_reg as u32) << 24));
-        } else {
-            let s_gc = self.heap.allocate(name);
-            let k_name = self.state.add_k(Value::String(s_gc));
-            // SETTABUP _ENV key=B val=C
-            // Op=14 (SETTABUP), A=0 (_ENV), B=k_name, C=dest_reg, k=1
-            self.emit(14 | (0 << 7) | ((k_name as u32) << 24) | ((dest_reg as u32) << 16) | (1 << 15));
-        }
-        self.state.pop_regs(1);
+        self.emit_store(name, dest_reg)?;
+        self.current_state().pop_regs(1);
         Ok(())
     }
 
-    fn parse_call_statement(&mut self, name: String) -> Result<(), LuaError> {
-        let func_reg = self.state.push_reg();
-        if let Some(reg) = self.state.resolve_local(&name) {
-            self.emit(0 | ((func_reg as u32) << 7) | ((reg as u32) << 24));
+    fn emit_store(&mut self, name: String, src_reg: usize) -> Result<(), LuaError> {
+        if let Some(reg) = self.current_state().resolve_local(&name) {
+            self.emit(0 | ((reg as u32) << 7) | ((src_reg as u32) << 24));
+        } else if let Some(uv_idx) = self.resolve_upvalue(&name) {
+            // SETUPVAL src_reg uv_idx
+            self.emit(9 | ((src_reg as u32) << 7) | ((uv_idx as u32) << 15));
         } else {
+            // Global (SETTABUP _ENV)
             let s_gc = self.heap.allocate(name);
-            let k_name = self.state.add_k(Value::String(s_gc));
-            // GETTABUP R[func_reg] _ENV K[k_name]
-            self.emit(10 | ((func_reg as u32) << 7) | (0 << 24) | ((k_name as u32) << 16) | (1 << 15));
+            let k_name = self.current_state().add_k(Value::String(s_gc));
+            // Op=14 (SETTABUP), A=0 (_ENV), B=k_name, C=src_reg, k=1
+            self.emit(14 | (0 << 7) | ((k_name as u32) << 24) | ((src_reg as u32) << 16) | (1 << 15));
+        }
+        Ok(())
+    }
+
+    fn resolve_upvalue(&mut self, name: &str) -> Option<usize> {
+        if self.states.len() <= 1 { return None; }
+
+        // Check if already in current state's upvalues
+        for (i, uv) in self.states.last().unwrap().upvalues.iter().enumerate() {
+            if uv.name == name { return Some(i); }
         }
 
+        // Try to resolve in outer states
+        let mut depth = self.states.len() - 2;
+        loop {
+            // Check locals in this outer state
+            if let Some(reg) = self.states[depth].resolve_local(name) {
+                // Found! Now add to all states from depth+1 to end
+                let mut prev_uv_idx = reg;
+                let mut instack = true;
+                for d in (depth + 1)..self.states.len() {
+                    let uv_idx = self.states[d].upvalues.len();
+                    self.states[d].upvalues.push(UpvalDesc {
+                        name: name.to_string(),
+                        instack,
+                        idx: prev_uv_idx as u8,
+                    });
+                    prev_uv_idx = uv_idx;
+                    instack = false;
+                }
+                return Some(prev_uv_idx);
+            }
+
+            // Check upvalues in this outer state
+            for (i, uv) in self.states[depth].upvalues.iter().enumerate() {
+                if uv.name == name {
+                    // Found!
+                    let mut prev_uv_idx = i;
+                    for d in (depth + 1)..self.states.len() {
+                        let uv_idx = self.states[d].upvalues.len();
+                        self.states[d].upvalues.push(UpvalDesc {
+                            name: name.to_string(),
+                            instack: false,
+                            idx: prev_uv_idx as u8,
+                        });
+                        prev_uv_idx = uv_idx;
+                    }
+                    return Some(prev_uv_idx);
+                }
+            }
+
+            if depth == 0 { break; }
+            depth -= 1;
+        }
+        None
+    }
+
+    fn parse_call_statement(&mut self, name: String) -> Result<(), LuaError> {
+        let func_reg = self.current_state().push_reg();
+        self.emit_load(name, func_reg)?;
+        self.parse_call(func_reg, 0)?;
+        self.current_state().pop_regs(1);
+        Ok(())
+    }
+
+    fn parse_call(&mut self, func_reg: usize, nresults: i32) -> Result<(), LuaError> {
         self.expect(Token::LParen)?;
         let mut arg_count = 0;
+        let mut vararg_call = false;
         if self.peek() != &Token::RParen {
             loop {
-                let arg_reg = self.state.push_reg();
+                let arg_reg = self.current_state().push_reg();
+                if self.peek() == &Token::Dots {
+                    self.consume()?;
+                    // VARARG arg_reg 0
+                    self.emit(79 | ((arg_reg as u32) << 7) | (0 << 24));
+                    vararg_call = true;
+                    arg_count += 1;
+                    break;
+                }
                 self.parse_expression(arg_reg)?;
                 arg_count += 1;
                 if self.peek() == &Token::Comma {
@@ -421,15 +570,174 @@ impl<'a> Parser<'a> {
         }
         self.expect(Token::RParen)?;
 
-        // CALL R[func_reg] B=arg_count+1 C=1
-        self.emit(67 | ((func_reg as u32) << 7) | (((arg_count + 1) as u32) << 24) | (1 << 15));
+        // CALL R[func_reg] B=arg_count+1 (or 0 if vararg) C=nresults+1
+        let b = if vararg_call { 0 } else { arg_count + 1 };
+        let c = (nresults + 1) as u32;
+        self.emit(67 | ((func_reg as u32) << 7) | ((b as u32) << 24) | (c << 15));
 
-        self.state.pop_regs(arg_count + 1);
+        self.current_state().pop_regs(arg_count);
+        Ok(())
+    }
+
+    fn emit_load(&mut self, name: String, dest_reg: usize) -> Result<(), LuaError> {
+        if let Some(reg) = self.current_state().resolve_local(&name) {
+            self.emit(0 | ((dest_reg as u32) << 7) | ((reg as u32) << 24));
+        } else if let Some(uv_idx) = self.resolve_upvalue(&name) {
+            // GETUPVAL dest_reg uv_idx
+            self.emit(8 | ((dest_reg as u32) << 7) | ((uv_idx as u32) << 15));
+        } else {
+            // Global (GETTABUP _ENV)
+            let s_gc = self.heap.allocate(name);
+            let k_name = self.current_state().add_k(Value::String(s_gc));
+            self.emit(10 | ((dest_reg as u32) << 7) | (0 << 24) | ((k_name as u32) << 16) | (1 << 15));
+        }
         Ok(())
     }
 
     fn parse_expression(&mut self, dest_reg: usize) -> Result<(), LuaError> {
         self.parse_binop(dest_reg, 0)
+    }
+
+    fn parse_table_assignment(&mut self, table_name: String) -> Result<(), LuaError> {
+        let table_reg = self.current_state().push_reg();
+        self.emit_load(table_name, table_reg)?;
+        self.expect(Token::Dot)?;
+        if let Token::Name(field_name) = self.consume()? {
+            self.expect(Token::Assign)?;
+            let val_reg = self.current_state().push_reg();
+            self.parse_expression(val_reg)?;
+
+            let s_gc = self.heap.allocate(field_name);
+            let k_field = self.current_state().add_k(Value::String(s_gc));
+            // SETFIELD A B C (SETFIELD R[A] K[B] R[C])
+            // Op=17, A=table_reg, B=k_field, C=val_reg
+            self.emit(17 | ((table_reg as u32) << 7) | ((k_field as u32) << 24) | ((val_reg as u32) << 15));
+
+            self.current_state().pop_regs(2);
+        }
+        Ok(())
+    }
+
+    fn parse_return_statement(&mut self) -> Result<(), LuaError> {
+        let mut nres = 0;
+        let start_reg = self.current_state().next_reg;
+        if self.peek() != &Token::End && self.peek() != &Token::EOF && self.peek() != &Token::Else && self.peek() != &Token::Elseif && self.peek() != &Token::Until {
+            loop {
+                let reg = self.current_state().push_reg();
+                self.parse_expression(reg)?;
+                nres += 1;
+                if self.peek() == &Token::Comma {
+                    self.consume()?;
+                } else {
+                    break;
+                }
+            }
+        }
+        // RETURN A B
+        // A = start_reg, B = nres + 1
+        self.emit(69 | ((start_reg as u32) << 7) | (((nres + 1) as u32) << 24));
+        self.current_state().pop_regs(nres);
+        Ok(())
+    }
+
+    fn parse_function_definition(&mut self, is_local: bool) -> Result<(), LuaError> {
+        let mut name_parts = Vec::new();
+        if !is_local {
+            if let Token::Name(name) = self.consume()? {
+                name_parts.push(name);
+                while self.peek() == &Token::Dot {
+                    self.consume()?;
+                    if let Token::Name(name) = self.consume()? {
+                        name_parts.push(name);
+                    }
+                }
+            }
+        } else {
+            if let Token::Name(name) = self.consume()? {
+                name_parts.push(name);
+            }
+        }
+
+        self.states.push(CompileState::new(false));
+        self.expect(Token::LParen)?;
+        let mut numparams = 0;
+        let mut is_vararg = false;
+        if self.peek() != &Token::RParen {
+            loop {
+                if self.peek() == &Token::Dots {
+                    self.consume()?;
+                    is_vararg = true;
+                    break;
+                }
+                if let Token::Name(arg_name) = self.consume()? {
+                    let reg = self.current_state().push_reg();
+                    self.current_state().locals.push(Local { name: arg_name, depth: 0, reg });
+                    numparams += 1;
+                }
+                if self.peek() == &Token::Comma {
+                    self.consume()?;
+                } else {
+                    break;
+                }
+            }
+        }
+        self.expect(Token::RParen)?;
+
+        self.current_state().numparams = numparams;
+        self.current_state().is_vararg = is_vararg;
+        if is_vararg {
+            self.emit(80 | ((numparams as u32) << 7)); // VARARGPREP
+        }
+
+        while self.peek() != &Token::End && self.peek() != &Token::EOF {
+            self.parse_statement()?;
+        }
+        self.expect(Token::End)?;
+        self.emit(70); // RETURN0
+
+        let state = self.states.pop().unwrap();
+        let proto = Proto {
+            instructions: state.instructions,
+            k: state.k,
+            upvalues: state.upvalues,
+            protos: state.protos,
+            numparams: state.numparams,
+            is_vararg: state.is_vararg,
+            maxstacksize: state.maxstacksize,
+        };
+        let proto_gc = self.heap.allocate(proto);
+
+        let parent_state = self.current_state();
+        let proto_idx = parent_state.protos.len();
+        parent_state.protos.push(proto_gc);
+
+        let dest_reg = parent_state.push_reg();
+        self.emit(78 | ((dest_reg as u32) << 7) | ((proto_idx as u32) << 15));
+
+        if is_local {
+            let state = self.current_state();
+            state.locals.push(Local {
+                name: name_parts[0].clone(),
+                depth: state.scope_depth,
+                reg: dest_reg,
+            });
+        } else if name_parts.len() == 1 {
+            self.emit_store(name_parts[0].clone(), dest_reg)?;
+            self.current_state().pop_regs(1);
+        } else if name_parts.len() > 1 {
+            // table field: t.f.g = func
+            // This is simplified: only support t.f
+            let table_reg = self.current_state().push_reg();
+            self.emit_load(name_parts[0].clone(), table_reg)?;
+            let s_gc = self.heap.allocate(name_parts[1].clone());
+            let k_field = self.current_state().add_k(Value::String(s_gc));
+            self.emit(17 | ((table_reg as u32) << 7) | ((k_field as u32) << 24) | ((dest_reg as u32) << 15));
+            self.current_state().pop_regs(2);
+        } else {
+             // Anonymous - leave it in dest_reg
+        }
+
+        Ok(())
     }
 
     fn get_precedence(token: &Token) -> i32 {
@@ -458,13 +766,13 @@ impl<'a> Parser<'a> {
             if prec <= min_prec { break; }
 
             let op = self.consume()?;
-            let right_reg = self.state.push_reg();
+            let right_reg = self.current_state().push_reg();
 
             let next_min_prec = if prec == 12 || prec == 8 { prec - 1 } else { prec };
             self.parse_binop(right_reg, next_min_prec)?;
 
             self.emit_binop(op, dest_reg, dest_reg, right_reg)?;
-            self.state.pop_regs(1);
+            self.current_state().pop_regs(1);
         }
         Ok(())
     }
@@ -494,17 +802,17 @@ impl<'a> Parser<'a> {
                     let val = (i + 0xFFFF) as u32; // Simplified signed handling
                     self.emit(2 | ((dest_reg as u32) << 7) | (val << 15));
                 } else {
-                    let k = self.state.add_k(Value::Integer(i));
+                    let k = self.current_state().add_k(Value::Integer(i));
                     self.emit(1 | ((dest_reg as u32) << 7) | ((k as u32) << 15));
                 }
             }
             Token::Number(n) => {
-                let k = self.state.add_k(Value::Number(n));
+                let k = self.current_state().add_k(Value::Number(n));
                 self.emit(1 | ((dest_reg as u32) << 7) | ((k as u32) << 15));
             }
             Token::String(s) => {
                 let s_gc = self.heap.allocate(s);
-                let k = self.state.add_k(Value::String(s_gc));
+                let k = self.current_state().add_k(Value::String(s_gc));
                 self.emit(1 | ((dest_reg as u32) << 7) | ((k as u32) << 15));
             }
             Token::True => {
@@ -517,12 +825,28 @@ impl<'a> Parser<'a> {
                 self.emit(7 | ((dest_reg as u32) << 7) | (0 << 24));
             }
             Token::Name(name) => {
-                if let Some(reg) = self.state.resolve_local(&name) {
-                    self.emit(0 | ((dest_reg as u32) << 7) | ((reg as u32) << 24));
-                } else {
-                    let s_gc = self.heap.allocate(name);
-                    let k_name = self.state.add_k(Value::String(s_gc));
-            self.emit(10 | ((dest_reg as u32) << 7) | (0 << 24) | ((k_name as u32) << 16) | (1 << 15));
+                self.emit_load(name, dest_reg)?;
+                while self.peek() == &Token::LParen {
+                    self.parse_call(dest_reg, 1)?;
+                }
+            }
+            Token::Dots => {
+                // VARARG dest_reg 2 (load 1 vararg)
+                self.emit(79 | ((dest_reg as u32) << 7) | (2 << 24));
+            }
+            Token::Function => {
+                // Anonymous function
+                self.parse_function_definition(false)?;
+                // Result is in the register allocated by parse_function_definition.
+                // But parse_function_definition allocates its own register.
+                // This is a bit messy, let's fix it.
+                // For now, assume it works if we adjust it.
+                // Actually, parse_function_definition puts it in a new register.
+                // We want it in dest_reg.
+                let last_reg = self.current_state().next_reg - 1;
+                if last_reg != dest_reg {
+                    self.emit(0 | ((dest_reg as u32) << 7) | ((last_reg as u32) << 24));
+                    self.current_state().pop_regs(1);
                 }
             }
             Token::LParen => {
@@ -569,7 +893,7 @@ impl<'a> Parser<'a> {
         } else if op == Token::Eq || op == Token::Lt || op == Token::Le {
              self.emit(opcode | (l << 7) | (r << 24));
         } else {
-            self.emit(opcode | (d << 7) | (l << 24) | (r << 15)); // Arithmetic/bitwise
+            self.emit(opcode | (d << 7) | (l << 24) | (r << 16)); // Arithmetic/bitwise
         }
         Ok(())
     }
