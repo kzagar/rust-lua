@@ -11,7 +11,7 @@ enum Token {
     String(String),
     // Keywords
     Local, Nil, True, False, And, Or, Not, If, Then, Else, Elseif, End,
-    While, Do, Repeat, Until, For, In, Function, Return, Break,
+    While, Do, Repeat, Until, For, In, Function, Return, Break, Global, Goto,
     // Operators
     Plus, Minus, Mul, Div, IDiv, Mod, Pow,
     BAnd, BOr, BXor, Shl, Shr,
@@ -201,6 +201,8 @@ impl<'a> Lexer<'a> {
             "function" => Ok(Token::Function),
             "return" => Ok(Token::Return),
             "break" => Ok(Token::Break),
+            "global" => Ok(Token::Global),
+            "goto" => Ok(Token::Goto),
             _ => Ok(Token::Name(s)),
         }
     }
@@ -379,6 +381,15 @@ impl<'a> Parser<'a> {
                     self.parse_local_declaration()?;
                 }
             }
+            Token::Global => {
+                self.consume()?;
+                if self.peek() == &Token::Function {
+                    self.consume()?;
+                    self.parse_global_function()?;
+                } else {
+                    self.parse_global_declaration()?;
+                }
+            }
             Token::Function => {
                 self.consume()?;
                 self.parse_function_definition(false)?;
@@ -387,12 +398,15 @@ impl<'a> Parser<'a> {
                 self.consume()?;
                 self.parse_return_statement()?;
             }
+            Token::Semi => {
+                self.consume()?;
+            }
             Token::Name(name) => {
                 self.consume()?;
                 if self.peek() == &Token::Assign {
                     self.consume()?;
                     self.parse_assignment(name)?;
-                } else if self.peek() == &Token::LParen {
+                } else if matches!(self.peek(), Token::LParen | Token::String(_) | Token::LCurly) {
                     self.parse_call_statement(name)?;
                 } else if self.peek() == &Token::Dot {
                     // Handle table assignment: t.f = ...
@@ -408,13 +422,58 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
+    fn parse_attribute(&mut self) -> Result<String, LuaError> {
+        if self.peek() == &Token::Lt {
+            self.consume()?;
+            let attr = if let Token::Name(name) = self.consume()? {
+                name
+            } else {
+                return Err(LuaError::SyntaxError("expected attribute name".to_string()));
+            };
+            self.expect(Token::Gt)?;
+            Ok(attr)
+        } else {
+            Ok(String::new())
+        }
+    }
+
+    fn parse_global_declaration(&mut self) -> Result<(), LuaError> {
+        let _def_attr = self.parse_attribute()?;
+        if self.peek() == &Token::Mul {
+            self.consume()?;
+            // global *
+            Ok(())
+        } else {
+            loop {
+                if let Token::Name(_name) = self.consume()? {
+                    let _attr = self.parse_attribute()?;
+                } else {
+                    return Err(LuaError::SyntaxError("expected name in global declaration".to_string()));
+                }
+                if self.peek() == &Token::Comma {
+                    self.consume()?;
+                } else {
+                    break;
+                }
+            }
+            Ok(())
+        }
+    }
+
+    fn parse_global_function(&mut self) -> Result<(), LuaError> {
+        // global function name body
+        self.parse_function_definition(false)
+    }
+
     fn parse_local_declaration(&mut self) -> Result<(), LuaError> {
         let mut names = Vec::new();
         if let Token::Name(name) = self.consume()? {
+            let _attr = self.parse_attribute()?;
             names.push(name);
             while self.peek() == &Token::Comma {
                 self.consume()?;
                 if let Token::Name(name) = self.consume()? {
+                    let _attr = self.parse_attribute()?;
                     names.push(name);
                 } else {
                     return Err(LuaError::SyntaxError("expected name after comma in local declaration".to_string()));
@@ -551,42 +610,63 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_call_internal(&mut self, func_reg: usize, nresults: i32, has_self: bool) -> Result<(), LuaError> {
-        self.expect(Token::LParen)?;
-        
-        if has_self {
-            self.current_state().push_reg(); // Reserve space for 'self' which is already in func_reg + 1
-        }
+        let b = match self.peek().clone() {
+            Token::LParen => {
+                self.consume()?;
+                if has_self {
+                    self.current_state().push_reg(); // Reserve space for 'self' which is already in func_reg + 1
+                }
 
-        let mut arg_count = if has_self { 1 } else { 0 };
-        let mut vararg_call = false;
-        if self.peek() != &Token::RParen {
-            loop {
-                let arg_reg = self.current_state().push_reg();
-                if self.peek() == &Token::Dots {
-                    self.consume()?;
-                    // VARARG arg_reg 0
-                    self.emit(OpCode::VarArg as u32 | ((arg_reg as u32) << 7));
-                    vararg_call = true;
-                    arg_count += 1;
-                    break;
+                let mut arg_count = if has_self { 1 } else { 0 };
+                let mut vararg_call = false;
+                if self.peek() != &Token::RParen {
+                    loop {
+                        let arg_reg = self.current_state().push_reg();
+                        if self.peek() == &Token::Dots {
+                            self.consume()?;
+                            // VARARG arg_reg 0
+                            self.emit(OpCode::VarArg as u32 | ((arg_reg as u32) << 7));
+                            vararg_call = true;
+                            arg_count += 1;
+                            break;
+                        }
+                        self.parse_expression(arg_reg)?;
+                        arg_count += 1;
+                        if self.peek() == &Token::Comma {
+                            self.consume()?;
+                        } else {
+                            break;
+                        }
+                    }
                 }
-                self.parse_expression(arg_reg)?;
-                arg_count += 1;
-                if self.peek() == &Token::Comma {
-                    self.consume()?;
-                } else {
-                    break;
-                }
+                self.expect(Token::RParen)?;
+                let b = if vararg_call { 0 } else { arg_count + 1 };
+                self.current_state().pop_regs(arg_count);
+                b
             }
-        }
-        self.expect(Token::RParen)?;
+            Token::String(s) => {
+                self.consume()?;
+                if has_self {
+                    return Err(LuaError::SyntaxError("colon call with string literal not supported".to_string()));
+                }
+                let arg_reg = self.current_state().push_reg();
+                let s_gc = self.heap.allocate(s);
+                let k = self.current_state().add_k(Value::String(s_gc));
+                self.emit(OpCode::LoadK as u32 | ((arg_reg as u32) << 7) | ((k as u32) << 15));
+                self.current_state().pop_regs(1);
+                2
+            }
+            Token::LCurly => {
+                // TODO: support table constructor as call arg
+                return Err(LuaError::SyntaxError("table constructor as function argument not yet supported".to_string()));
+            }
+            _ => return Err(LuaError::SyntaxError(format!("expected function arguments, got {:?}", self.peek()))),
+        };
 
-        // CALL R[func_reg] B=arg_count+1 (or 0 if vararg) C=nresults+1
-        let b = if vararg_call { 0 } else { arg_count + 1 };
+        // CALL R[func_reg] B=b C=nresults+1
         let c = (nresults + 1) as u32;
         self.emit(OpCode::Call as u32 | ((func_reg as u32) << 7) | ((b as u32) << 24) | (c << 15));
 
-        self.current_state().pop_regs(arg_count);
         Ok(())
     }
 
@@ -771,18 +851,42 @@ impl<'a> Parser<'a> {
         self.parse_unary(dest_reg)?;
 
         loop {
-            let prec = Self::get_precedence(self.peek());
+            let token = self.peek().clone();
+            let prec = Self::get_precedence(&token);
             if prec <= min_prec { break; }
 
-            let op = self.consume()?;
-            let right_reg = self.current_state().push_reg();
+            self.consume()?;
 
-            let next_min_prec = if prec == 12 || prec == 8 { prec - 1 } else { prec };
-            self.parse_binop(right_reg, next_min_prec)?;
+            if token == Token::And || token == Token::Or {
+                self.parse_logical_op(token, dest_reg, prec)?;
+            } else {
+                let right_reg = self.current_state().push_reg();
 
-            self.emit_binop(op, dest_reg, dest_reg, right_reg)?;
-            self.current_state().pop_regs(1);
+                let next_min_prec = if prec == 12 || prec == 8 { prec - 1 } else { prec };
+                self.parse_binop(right_reg, next_min_prec)?;
+
+                self.emit_binop(token, dest_reg, dest_reg, right_reg)?;
+                self.current_state().pop_regs(1);
+            }
         }
+        Ok(())
+    }
+
+    fn parse_logical_op(&mut self, op: Token, dest_reg: usize, prec: i32) -> Result<(), LuaError> {
+        let is_and = op == Token::And;
+        let k = if is_and { 0 } else { 1 };
+        // OP_TESTSET A B k (if (not R[B] == k) then pc++ else R[A] := R[B])
+        self.emit(OpCode::TestSet as u32 | ((dest_reg as u32) << 7) | ((dest_reg as u32) << 24) | (k << 15));
+
+        let jmp_idx = self.current_state().instructions.len();
+        self.emit(OpCode::Jmp as u32); // Placeholder
+
+        self.parse_binop(dest_reg, prec)?;
+
+        let end_idx = self.current_state().instructions.len();
+        let diff = (end_idx - jmp_idx - 1) as i32;
+        self.current_state().instructions[jmp_idx] = Instruction(OpCode::Jmp as u32 | (((diff + 0xFFFFFF) as u32) << 7));
+
         Ok(())
     }
 
@@ -837,7 +941,7 @@ impl<'a> Parser<'a> {
                 self.emit_load(name, dest_reg)?;
                 loop {
                     match self.peek() {
-                        Token::LParen => {
+                        Token::LParen | Token::String(_) | Token::LCurly => {
                             self.parse_call(dest_reg, 1)?;
                         }
                         Token::Dot => {

@@ -746,6 +746,40 @@ impl LuaState {
                             return Err(LuaError::RuntimeError("SETFIELD: target is not a table".to_string()));
                         }
                     }
+                    OpCode::Jmp => { // JMP
+                        let sj = inst.sj();
+                        let frame = self.frames.last_mut().unwrap();
+                        frame.pc = (frame.pc as i32 + sj) as usize;
+                    }
+                    OpCode::Test => { // TEST
+                        let a = inst.a() as usize;
+                        let k = inst.k();
+                        let val = self.stack[base + a];
+                        let res = match val {
+                            Value::Nil | Value::Boolean(false) => false,
+                            _ => true,
+                        };
+                        if res != k {
+                            let frame = self.frames.last_mut().unwrap();
+                            frame.pc += 1;
+                        }
+                    }
+                    OpCode::TestSet => { // TESTSET
+                        let a = inst.a() as usize;
+                        let b = inst.b() as usize;
+                        let k = inst.k();
+                        let val = self.stack[base + b];
+                        let res = match val {
+                            Value::Nil | Value::Boolean(false) => false,
+                            _ => true,
+                        };
+                        if res == k {
+                            self.stack[base + a] = val;
+                        } else {
+                            let frame = self.frames.last_mut().unwrap();
+                            frame.pc += 1;
+                        }
+                    }
                     _ => return Err(LuaError::RuntimeError(format!("unimplemented opcode {:?}", op))),
                 }
             }

@@ -1,7 +1,7 @@
 # Design Document: Async Lua Port to Rust
 
 ## 1. Introduction
-This document outlines the design for porting the Lua VM to Rust with native `async/await` support. The goal is to provide a Lua execution environment where the VM itself is async-aware, allowing Lua scripts to call async Rust functions and yield execution naturally.
+This document outlines the design for porting the Lua VM to Rust with native `async/await` support. The goal is to provide a Lua execution environment where the VM itself is async-aware, allowing Lua scripts to call async Rust functions and yield execution naturally. `rua` aims to target Lua 5.5 compatibility.
 
 ## 2. Core Architecture
 
@@ -66,6 +66,8 @@ type AsyncCallback = Box<dyn for<'a> Fn(&'a mut LuaState) -> BoxFuture<'a, Resul
 A robust recursive descent parser has been implemented, matching Lua 5.4's expression precedence and statement structure.
 - **Supported Syntax**:
     - Local variable declarations (`local x = 10`).
+    - Local and Global declarations with attributes (`local x <const> = 10`, `global y <close>`).
+    - Explicit global declarations (`global x`, `global <const> *`).
     - Assignments (local and global).
     - Arithmetic operations: `+`, `-`, `*`, `/`, `//`, `%`, `^`, unary `-`.
     - Bitwise operations: `&`, `|`, `~`, `<<`, `>>`, unary `~`.
