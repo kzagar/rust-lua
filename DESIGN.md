@@ -1,21 +1,59 @@
-# Design Document: Async Lua Port to Rust
+# Design Document: Rua - Async Lua for Web Services
 
 ## 1. Introduction
-This document outlines the design for porting the Lua VM to Rust with native `async/await` support. The goal is to provide a Lua execution environment where the VM itself is async-aware, allowing Lua scripts to call async Rust functions and yield execution naturally. `rua` aims to target Lua 5.5 compatibility.
+Rua is a lightweight Lua interpreter written in Rust, designed around the async paradigm. Its primary goal is to facilitate the development of web server applications that demand low memory footprint and low serving latency.
 
-## 2. Core Architecture
+By leveraging Rust's safety and performance, along with native `async/await` support, Rua provides an environment where Lua scripts can efficiently handle high-concurrency workloads typical of modern web services.
 
-### 2.1 LuaState and GlobalState
-- **`LuaState`**: Represents a Lua thread (coroutine). It contains its own execution stack and a stack of `CallFrame`s. It is `Send` but not `Sync`.
+## 2. Vision and Core Goals
+- **Low Latency & Low Memory**: Optimized for high-performance serving environments.
+- **Async-First**: The VM is natively async-aware, allowing non-blocking I/O and seamless integration with the Rust async ecosystem.
+- **Web-Ready**: Built-in support (via add-on crates) for common web server requirements like REST HTTP(S), SQLite, and JSON parsing.
+- **Lua 5.5 Compatibility**: Target compatibility with the latest Lua specifications while providing modern extensions (e.g., `global` keyword).
+
+## 3. Ecosystem Architecture
+Rua is organized as a modular set of crates to keep the core interpreter lightweight while providing rich functionality through extensions.
+
+- **`rua`**: The core Lua interpreter and VM.
+- **`rua-resty-http`**: Provides a Lua API for making asynchronous HTTP(S) requests, modeled after `lua-resty-http`.
+- **`rua-sqlite`** (Planned): Asynchronous SQLite integration for persistent storage.
+- **`rua-axum`** (Planned): Integration with the Axum web framework, allowing Rua functions to be bound directly to REST endpoints.
+- **`rua-web`** (Planned): A comprehensive web server package that combines `rua`, `rua-axum`, `rua-resty-http`, and `rua-sqlite` on top of the Tokio runtime.
+- **`rua-cli`**: A command-line interface for executing Rua scripts, including support for HTTP and SQLite integrations via Tokio.
+
+## 4. Performance Drivers
+### 4.1 Native Rust Primitives
+To minimize latency, common web server operations are implemented as native Rust primitives and exposed to Lua. This includes:
+- Asynchronous HTTP(S) requests.
+- SQLite database interactions.
+- JSON parsing and serialization.
+By keeping these performance-critical tasks in Rust, Rua minimizes the overhead of executing complex logic within the Lua VM.
+
+### 4.2 Async VM Loop
+The core VM loop is implemented as an `async` function. This allows the VM to yield execution naturally when waiting for I/O, without blocking host threads.
+
+### 4.3 Future JIT Optimization
+A future phase of development will introduce a Just-In-Time (JIT) compiler based on LuaJIT principles to further enhance execution speed for hot code paths.
+
+## 5. Benchmarking and Quality Assurance
+To ensure the goals of low memory and latency are met, a suite of benchmarks will be maintained:
+- **Characteristic Workloads**: Benchmarks simulating typical web server tasks (e.g., API requests with database lookups).
+- **Comparative Analysis**: Performance comparisons against standard Lua (C implementation) and Python's FastAPI to validate Rua's advantages in web serving scenarios.
+- **Regression Testing**: Automated performance tracking to catch latency or memory usage regressions during development.
+
+## 6. Core Architecture
+
+### 6.1 LuaState and GlobalState
+- **`LuaState`**: Represents a Lua thread (coroutine). It contains its own execution stack and a stack of `CallFrame`s. It is `Send` but not `Sync`, allowing it to be moved between threads (e.g., across `tokio::spawn` points).
 - **`GlobalState`**: Contains data shared across all `LuaState` instances within the same environment, such as the string table, global environment, and the Garbage Collector (GC) heap.
 
-### 2.2 Call Frames
+### 6.2 Call Frames
 The VM uses a call stack of `CallFrame`s to manage function execution.
 - **`CallFrame`**: Stores the active `Closure`, the program counter (`pc`), the stack `base` (index where local registers start), and the number of expected results (`nresults`).
 - This architecture allows for non-recursive Lua-to-Lua calls and proper register isolation.
 
-### 2.2 Value Representation
-Lua values will be represented by an idiomatic Rust `enum`:
+### 6.3 Value Representation
+Lua values are represented by an idiomatic Rust `enum`:
 ```rust
 pub enum Value {
     Nil,
@@ -30,14 +68,13 @@ pub enum Value {
 }
 ```
 
-## 3. Garbage Collection
-A custom mark-and-sweep garbage collector will be implemented.
+## 7. Garbage Collection
+A custom mark-and-sweep garbage collector is used.
 - **`Gc<T>`**: A smart pointer that tracks references to objects in the GC heap.
-- **Heap Management**: The `GlobalState` will manage an arena or a collection of allocated objects.
-- **Tracing**: Objects will implement a `Trace` trait to allow the GC to find reachable objects.
+- **Tracing**: Objects implement a `Trace` trait to allow the GC to find reachable objects.
 
-## 4. Async VM Execution
-The core VM loop will be an `async` function, allowing it to `.await` on any operation.
+## 8. Async VM Execution
+The core VM loop is an `async` function:
 ```rust
 impl LuaState {
     pub async fn execute(&mut self) -> Result<(), LuaError> {
@@ -46,76 +83,38 @@ impl LuaState {
         }
         Ok(())
     }
-
-    async fn dispatch(&mut self, instruction: Instruction) -> Result<(), LuaError> {
-        match instruction.opcode() {
-            OpCode::Call => self.call_function().await,
-            // ... other opcodes
-        }
-    }
 }
 ```
 
-### 4.1 Async Callbacks
+### 8.1 Async Callbacks
 Rust functions exposed to Lua can be `async fn`. When Lua calls such a function, the VM will `await` its completion.
 ```rust
 type AsyncCallback = Box<dyn for<'a> Fn(&'a mut LuaState) -> BoxFuture<'a, Result<int, LuaError>> + Send>;
 ```
 
-## 5. The Parser and Compiler
-A robust recursive descent parser has been implemented, matching Lua 5.4's expression precedence and statement structure.
-- **Supported Syntax**:
-    - Local variable declarations (`local x = 10`).
-    - Local and Global declarations with attributes (`local x <const> = 10`, `global y <close>`).
-    - Explicit global declarations (`global x`, `global <const> *`).
-    - Assignments (local and global).
-    - Arithmetic operations: `+`, `-`, `*`, `/`, `//`, `%`, `^`, unary `-`.
-    - Bitwise operations: `&`, `|`, `~`, `<<`, `>>`, unary `~`.
-    - Relational operations: `==`, `~=`, `<`, `>`, `<=`, `>=`.
-    - Logical operations: `not` (initial support, `and`/`or` via expression precedence).
-    - Length operator `#` and concatenation `..`.
-    - Nested scopes using `do ... end`.
-    - Function calls as statements.
-- **Compiler**: Generates Lua 5.4 compatible 32-bit instructions. Constants are stored in the prototype's constant table (`k`).
+## 9. The Parser and Compiler
+A robust recursive descent parser is implemented, matching Lua 5.4's expression precedence and statement structure.
+- **Supported Syntax**: Includes local/global declarations with attributes (`<const>`, `<close>`), explicit `global` declarations, and all standard Lua arithmetic, bitwise, and relational operations.
+- **Compiler**: Generates Lua 5.4 compatible 32-bit instructions.
 
-## 6. VM Instruction Set
-The VM now implements a subset of Lua 5.4 opcodes with the exact bit layout:
-- `OpCode` (7 bits), `A` (8 bits), `C` (9 bits), `B` (8 bits) for `iABC`.
-- `Bx` (17 bits) for `iABx`, `sBx` for `iAsBx`.
+## 10. VM Instruction Set
+The VM implements a subset of Lua 5.4 opcodes with the exact bit layout:
+- `iABC`, `iABx`, `iAsBx`, `iAx`, `isJ` formats.
 - Supports immediate operands via the `k` bit and specialized opcodes like `LOADI`.
 
-## 7. Variables and Scoping
-- **Local Variables**: Stored on the VM stack. The compiler tracks register allocation and scope depth.
+## 11. Variables and Scoping
+- **Local Variables**: Stored on the VM stack.
 - **Global Variables**: Handled via the `_ENV` upvalue, which points to the global table.
-- **Upvalues**: Initial support for upvalues in `Closure` objects.
+- **Upvalues**: Support for mutable shared upvalues is implemented.
 
-## 8. Current Simplifications and Limitations
-- **Tables**: Currently implemented using Rust's `HashMap<Value, Value>`. Does not yet feature the dual array/hash representation of standard Lua.
-- **Upvalues**: Capture values from the stack at closure creation. "Open" upvalues that track live stack slots are not yet implemented; however, upvalues are mutable and shared among closures.
-- **Metatables**: Basic support for `__index` metamethod has been implemented to support object-oriented style calls.
-- **String Table**: Strings are currently allocated in the GC heap but not internalized in a global string table.
+## 12. Error Handling
+Rua uses Rust's `Result<T, LuaError>` for error handling instead of C-style `longjmp`, ensuring safety and proper stack unwinding.
 
-## 13. Extensions
-### 13.1 UserData and Metatables
-The VM supports `UserData` for wrapping Rust types. `UserData` can have metatables, allowing them to behave like objects in Lua. The `__index` metamethod is currently supported for both Tables and UserData.
+## 13. Current Simplifications and Limitations
+- **Tables**: Currently implemented using Rust's `HashMap<Value, Value>`.
+- **Upvalues**: "Open" upvalues that track live stack slots are not yet implemented.
+- **Metatables**: Basic support for `__index` metamethod is implemented for Tables and UserData.
+- **String Table**: Strings are GC-allocated but not yet internalized in a global table.
 
-### 13.2 HTTP Client (rua-resty-http)
-A separate crate `rua-resty-http` provides a Lua API for making HTTP requests, modeled after `lua-resty-http`. It uses `reqwest` and integrates with the async VM loop.
-
-## 9. Error Handling
-Instead of C-style `longjmp`, the entire codebase will use Rust's `Result<T, LuaError>`. This ensures safety and proper stack unwinding.
-
-## 10. Concurrency Model
-- `LuaState` is `Send`, allowing it to be moved between threads (e.g., across `tokio::spawn` points).
-- It is not `Sync`, as Lua execution is inherently single-threaded per state.
-- Multiple `LuaState`s can share a `GlobalState` if protected by appropriate synchronization, though initially, we may target a single-threaded execution model for the `GlobalState` as well (e.g., using `Rc` and `RefCell` internally if confined to one thread, or `Arc` and `Mutex` if shared).
-
-## 11. IO and Standard Library
-IO-bound functions (like `print`, `io.read`, etc.) will be implemented using `tokio`'s async IO traits.
-
-## 12. Implementation Plan
-1. Define core types (`Value`, `Instruction`, `LuaError`).
-2. Implement the basic GC infrastructure.
-3. Implement the VM execution loop with a few basic opcodes.
-4. Implement a subset of the parser/compiler.
-5. Integrate `tokio` for async IO callbacks.
+## 14. IO and Standard Library
+IO-bound functions are implemented using `tokio`'s async IO traits to maintain the non-blocking nature of the VM.
