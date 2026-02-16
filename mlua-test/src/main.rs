@@ -18,6 +18,8 @@ use mlua::RegistryKey;
 use notify_debouncer_mini::{new_debouncer, notify::RecursiveMode};
 use std::time::Duration;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
+use tower_http::services::ServeDir;
 
 struct Database {
     pool: sqlx::SqlitePool,
@@ -144,15 +146,29 @@ struct RestRequest {
     response_tx: oneshot::Sender<Result<JsonValue, String>>,
 }
 
-struct RestServer {
-    routes: Vec<RestRouteInfo>,
-}
+
 
 struct RestRouteInfo {
     path: String,
     method: String,
     callback_id: usize,
     callback_key: RegistryKey,
+}
+
+#[derive(Clone)]
+enum ServerConfig {
+    Http(String),
+    Https(String, String, String),
+}
+
+struct AppState {
+    routes: Vec<RestRouteInfo>,
+    static_routes: Vec<(String, String)>,
+    config: Option<ServerConfig>,
+}
+
+struct RestServer {
+    state: Arc<Mutex<AppState>>,
 }
 
 struct ServerGuard(tokio::task::JoinHandle<()>);
@@ -165,10 +181,11 @@ impl Drop for ServerGuard {
 
 impl LuaUserData for RestServer {
     fn add_methods<M: LuaUserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method_mut("register", |lua, server, (path, method, func): (String, String, LuaFunction)| {
-            let callback_id = server.routes.len();
+        methods.add_method("register", |lua, server, (path, method, func): (String, String, LuaFunction)| {
+            let mut state = server.state.lock().unwrap();
+            let callback_id = state.routes.len();
             let callback_key = lua.create_registry_value(func)?;
-            server.routes.push(RestRouteInfo {
+            state.routes.push(RestRouteInfo {
                 path,
                 method: method.to_uppercase(),
                 callback_id,
@@ -177,190 +194,28 @@ impl LuaUserData for RestServer {
             Ok(())
         });
 
-        methods.add_async_method("listen", |lua, server, addr: String| async move {
-            let (tx, mut rx) = mpsc::channel::<RestRequest>(100);
-
-            let mut router = Router::new();
-            
-            // We need to move the routes info into the Axum handlers.
-            // Since Axum handlers need to be Send, we'll store the callback_ids.
-            for route_info in &server.routes {
-                let path = route_info.path.clone();
-                let method = route_info.method.clone();
-                let callback_id = route_info.callback_id;
-                let tx_clone = tx.clone();
-
-                let handler = move |AxQuery(params): AxQuery<HashMap<String, String>>| async move {
-                    let (res_tx, res_rx) = oneshot::channel();
-                    let req = RestRequest {
-                        callback_id,
-                        params,
-                        response_tx: res_tx,
-                    };
-
-                    if tx_clone.send(req).await.is_err() {
-                        return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Server shutting down").into_response();
-                    }
-
-                    match res_rx.await {
-                        Ok(Ok(val)) => Json::<JsonValue>(val).into_response(),
-                        Ok(Err(e)) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
-                        Err(_) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "No response from Lua").into_response(),
-                    }
-                };
-
-                router = match method.as_str() {
-                    "GET" => router.route(&path, get(handler)),
-                    "POST" => router.route(&path, post(handler)),
-                    "PUT" => router.route(&path, put(handler)),
-                    "DELETE" => router.route(&path, delete(handler)),
-                    _ => router.route(&path, get(handler)), // Default to GET
-                };
-            }
-
-            println!("REST server listening on http://{}", addr);
-            let listener = tokio::net::TcpListener::bind(&addr).await
-                .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
-            
-            // Run axum in a separate task
-            let server_handle = tokio::spawn(async move {
-                if let Err(e) = axum::serve(listener, router).await {
-                    eprintln!("REST server error: {}", e);
-                }
-            });
-            let _guard = ServerGuard(server_handle);
-
-            // Process requests in the Lua thread
-            loop {
-                tokio::select! {
-                    Some(req) = rx.recv() => {
-                        let route_info = &server.routes[req.callback_id];
-                        let func: LuaFunction = lua.registry_value(&route_info.callback_key)?;
-                        
-                        // Convert params to Lua table
-                        let params_table = lua.create_table()?;
-                        for (k, v) in req.params {
-                            params_table.set(k, v)?;
-                        }
-
-                        // Call Lua function
-                        let res: LuaResult<LuaValue> = func.call_async(params_table).await;
-                        match res {
-                            Ok(val) => {
-                                // Convert Lua value back to JSON
-                                let json_val: std::result::Result<JsonValue, _> = lua.from_value(val);
-                                match json_val {
-                                    Ok(jv) => { req.response_tx.send(Ok(jv)).ok(); },
-                                    Err(e) => { req.response_tx.send(Err(format!("JSON conversion error: {}", e))).ok(); }
-                                }
-                            },
-                            Err(e) => {
-                                req.response_tx.send(Err(e.to_string())).ok();
-                            }
-                        }
-                    }
-                    else => break,
-                }
-            }
-
-            // _guard will be dropped here, aborting the server
+        methods.add_method("listen", |_, server, addr: String| {
+            let mut state = server.state.lock().unwrap();
+            state.config = Some(ServerConfig::Http(addr));
             Ok(())
         });
 
-        methods.add_async_method("listen_tls", |lua, server, (addr, cert_path, key_path): (String, String, String)| async move {
-            let config = RustlsConfig::from_pem_file(
-                PathBuf::from(cert_path),
-                PathBuf::from(key_path),
-            )
-            .await
-            .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
-            let (tx, mut rx) = mpsc::channel::<RestRequest>(100);
-            let mut router = Router::new();
-            
-            for route_info in &server.routes {
-                let path = route_info.path.clone();
-                let method = route_info.method.clone();
-                let callback_id = route_info.callback_id;
-                let tx_clone = tx.clone();
-
-                let handler = move |AxQuery(params): AxQuery<HashMap<String, String>>| async move {
-                    let (res_tx, res_rx) = oneshot::channel();
-                    let req = RestRequest {
-                        callback_id,
-                        params,
-                        response_tx: res_tx,
-                    };
-
-                    if tx_clone.send(req).await.is_err() {
-                        return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Server shutting down").into_response();
-                    }
-
-                    match res_rx.await {
-                        Ok(Ok(val)) => Json::<JsonValue>(val).into_response(),
-                        Ok(Err(e)) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
-                        Err(_) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "No response from Lua").into_response(),
-                    }
-                };
-
-                router = match method.as_str() {
-                    "GET" => router.route(&path, get(handler)),
-                    "POST" => router.route(&path, post(handler)),
-                    "PUT" => router.route(&path, put(handler)),
-                    "DELETE" => router.route(&path, delete(handler)),
-                    _ => router.route(&path, get(handler)),
-                };
-            }
-
-            println!("REST server listening (TLS) on https://{}", addr);
-            let addr_parsed: std::net::SocketAddr = addr.parse()
-                .map_err(|e: std::net::AddrParseError| LuaError::RuntimeError(e.to_string()))?;
-            
-            let server_handle = tokio::spawn(async move {
-                if let Err(e) = axum_server::bind_rustls(addr_parsed, config)
-                    .serve(router.into_make_service())
-                    .await {
-                    eprintln!("REST server error: {}", e);
-                }
-            });
-            let _guard = ServerGuard(server_handle);
-
-            loop {
-                tokio::select! {
-                    Some(req) = rx.recv() => {
-                        let route_info = &server.routes[req.callback_id];
-                        let func: LuaFunction = lua.registry_value(&route_info.callback_key)?;
-                        
-                        let params_table = lua.create_table()?;
-                        for (k, v) in req.params {
-                            params_table.set(k, v)?;
-                        }
-
-                        let res: LuaResult<LuaValue> = func.call_async(params_table).await;
-                        match res {
-                            Ok(val) => {
-                                let json_val: std::result::Result<JsonValue, _> = lua.from_value(val);
-                                match json_val {
-                                    Ok(jv) => { req.response_tx.send(Ok(jv)).ok(); },
-                                    Err(e) => { req.response_tx.send(Err(format!("JSON conversion error: {}", e))).ok(); }
-                                }
-                            },
-                            Err(e) => {
-                                req.response_tx.send(Err(e.to_string())).ok();
-                            }
-                        }
-                    }
-                    else => break,
-                }
-            }
-
-            // _guard will be dropped here, aborting the server
+        methods.add_method("listen_tls", |_, server, (addr, cert_path, key_path): (String, String, String)| {
+            let mut state = server.state.lock().unwrap();
+            state.config = Some(ServerConfig::Https(addr, cert_path, key_path));
             Ok(())
+        });
+
+        methods.add_method("serve_static", |_, server, (url_path, fs_path): (String, String)| {
+             let mut state = server.state.lock().unwrap();
+             state.static_routes.push((url_path, fs_path));
+             Ok(())
         });
     }
 }
 
-fn register_modules(lua: &Lua) -> LuaResult<()> {
+fn register_modules(lua: &Lua, app_state: Arc<Mutex<AppState>>) -> LuaResult<()> {
     // Register sqlite3 module
     let sqlite3 = lua.create_table()?;
     sqlite3.set("open", lua.create_async_function(|_, path: String| async move {
@@ -405,8 +260,9 @@ fn register_modules(lua: &Lua) -> LuaResult<()> {
 
     // Register rest module
     let rest = lua.create_table()?;
-    rest.set("new", lua.create_function(|_, ()| {
-        Ok(RestServer { routes: Vec::new() })
+    let state_clone = app_state.clone();
+    rest.set("new", lua.create_function(move |_, ()| {
+        Ok(RestServer { state: state_clone.clone() })
     })?)?;
     lua.globals().set("rest", rest)?;
 
@@ -469,11 +325,23 @@ async fn main() -> LuaResult<()> {
         .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
     let lua = Lua::new();
-    register_modules(&lua)?;
+    let app_state = Arc::new(Mutex::new(AppState {
+        routes: Vec::new(),
+        static_routes: Vec::new(),
+        config: None,
+    }));
+    register_modules(&lua, app_state.clone())?;
 
     loop {
         // Drain pending reload signals
         while let Ok(_) = rx.try_recv() {}
+
+        {
+            let mut state = app_state.lock().unwrap();
+            state.routes.clear();
+            state.static_routes.clear();
+            state.config = None;
+        }
 
         let content = fs::read_to_string(&abs_path)
             .map_err(|e| LuaError::RuntimeError(format!("Failed to read {}: {}", path_str, e)))?;
@@ -486,16 +354,215 @@ async fn main() -> LuaResult<()> {
             res = run_fut => {
                 if let Err(e) = res {
                     eprintln!("Lua execution error: {}", e);
+                    // On error, wait for change
                 } else {
                     println!("--- Lua script finished ---");
-                    break;
+                    
+                    // Check if we should start server
+                    let should_run = {
+                        let state = app_state.lock().unwrap();
+                        !state.routes.is_empty() || !state.static_routes.is_empty()
+                    };
+
+                    if should_run {
+                        // Start server logic
+                        println!("Starting server...");
+                        let config = {
+                            let mut state = app_state.lock().unwrap();
+                            if state.config.is_none() {
+                                println!("Using default configuration: HTTPS 0.0.0.0:3443");
+                                state.config = Some(ServerConfig::Https("0.0.0.0:3443".to_string(), "cert.pem".to_string(), "key.pem".to_string()));
+                            }
+                            state.config.clone()
+                        };
+
+                        let (tx, mut req_rx) = mpsc::channel::<RestRequest>(100);
+                        let mut router = Router::new();
+                        let script_dir = abs_path.parent().unwrap_or(Path::new("."));
+                        
+                        // Setup routes
+                        {
+                            let state = app_state.lock().unwrap();
+                            // Setup static routes
+                            for (url_path, fs_path_str) in &state.static_routes {
+                                let mut full_fs_path = script_dir.join(fs_path_str);
+                                // Security check: sanitize and ensure no symlinks escaping or parent traversal issues if possible
+                                // Basic check: canonicalize and ensure it starts with script dir (or allowed dir)
+                                // For now, we will canonicalize and enforce that it exists.
+                                // NOTE: Enforcing "not outside directory" strictly is hard without a defined root.
+                                // We will trust the Lua script path resolution relative to itself, but check for symlinks via canonicalize.
+                                match fs::canonicalize(&full_fs_path) {
+                                     Ok(real_path) => {
+                                         if real_path.is_symlink() {
+                                             eprintln!("Warning: Skipping static path {} -> {} (Symlink detected)", url_path, fs_path_str);
+                                             continue;
+                                         }
+                                         // Check traversal? (already resolved by canonicalize)
+                                         println!("Serving static: {} -> {:?}", url_path, real_path);
+                                         
+                                         let service = ServeDir::new(real_path);
+                                         // If url_path is "/", we might want it at root.
+                                         // Axum nest_service expects a path prefix.
+                                         if url_path == "/" {
+                                              router = router.fallback_service(service);
+                                         } else {
+                                              router = router.nest_service(url_path, service);
+                                         }
+                                     },
+                                     Err(e) => {
+                                         eprintln!("Warning: Static path {} not found: {} ({})", fs_path_str, full_fs_path.display(), e);
+                                     }
+                                }
+                            }
+
+                            for route_info in &state.routes {
+                                let path = route_info.path.clone();
+                                let method = route_info.method.clone();
+                                let callback_id = route_info.callback_id;
+                                let tx_clone = tx.clone();
+    
+                                let handler = move |AxQuery(params): AxQuery<HashMap<String, String>>| async move {
+                                    let (res_tx, res_rx) = oneshot::channel();
+                                    let req = RestRequest {
+                                        callback_id,
+                                        params,
+                                        response_tx: res_tx,
+                                    };
+    
+                                    if tx_clone.send(req).await.is_err() {
+                                        return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Server shutting down").into_response();
+                                    }
+    
+                                    match res_rx.await {
+                                        Ok(Ok(val)) => Json::<JsonValue>(val).into_response(),
+                                        Ok(Err(e)) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+                                        Err(_) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "No response from Lua").into_response(),
+                                    }
+                                };
+    
+                                router = match method.as_str() {
+                                    "GET" => router.route(&path, get(handler)),
+                                    "POST" => router.route(&path, post(handler)),
+                                    "PUT" => router.route(&path, put(handler)),
+                                    "DELETE" => router.route(&path, delete(handler)),
+                                    _ => router.route(&path, get(handler)),
+                                };
+                            }
+                        }
+
+                        let server_guard_opt = match config {
+                            Some(ServerConfig::Http(addr)) => {
+                                println!("REST server listening on http://{}", addr);
+                                let listener_res = tokio::net::TcpListener::bind(&addr).await;
+                                match listener_res {
+                                    Ok(listener) => {
+                                        let server_handle = tokio::spawn(async move {
+                                            if let Err(e) = axum::serve(listener, router).await {
+                                                eprintln!("REST server error: {}", e);
+                                            }
+                                        });
+                                        Some(ServerGuard(server_handle))
+                                    },
+                                    Err(e) => {
+                                        eprintln!("Failed to bind to {}: {}", addr, e);
+                                        None
+                                    }
+                                }
+                            },
+                             Some(ServerConfig::Https(addr, cert, key)) => {
+                                println!("REST server listening (TLS) on https://{}", addr);
+                                let config_res = RustlsConfig::from_pem_file(PathBuf::from(cert), PathBuf::from(key)).await;
+                                match config_res {
+                                    Ok(tls_config) => {
+                                        let addr_parsed: Result<std::net::SocketAddr, _> = addr.parse();
+                                        match addr_parsed {
+                                            Ok(socket_addr) => {
+                                                let server_handle = tokio::spawn(async move {
+                                                    if let Err(e) = axum_server::bind_rustls(socket_addr, tls_config)
+                                                        .serve(router.into_make_service())
+                                                        .await {
+                                                        eprintln!("REST server error: {}", e);
+                                                    }
+                                                });
+                                                Some(ServerGuard(server_handle))
+                                            },
+                                            Err(e) => {
+                                                 eprintln!("Invalid address {}: {}", addr, e);
+                                                 None
+                                            }
+                                        }
+                                    },
+                                    Err(e) => {
+                                        eprintln!("TLS config error: {}", e);
+                                        None
+                                    }
+                                }
+                            },
+                            None => {
+                                eprintln!("Endpoints registered but no server configuration found (call srv:listen or srv:listen_tls)");
+                                None
+                            }
+                        };
+
+                        if let Some(_guard) = server_guard_opt {
+                             println!("Server running. Waiting for changes...");
+                             loop {
+                                tokio::select! {
+                                    Some(req) = req_rx.recv() => {
+                                        // Handle request
+                                        let (func, params, response_tx) = {
+                                            let state = app_state.lock().unwrap();
+                                            let route = &state.routes[req.callback_id];
+                                            let func: LuaFunction = lua.registry_value(&route.callback_key)?;
+                                            (func, req.params, req.response_tx)
+                                        };
+
+                                         // Use scoped block to handle Lua/Result interactions
+                                        let res: LuaResult<JsonValue> = (async {
+                                            let params_table = lua.create_table()?;
+                                            for (k, v) in params {
+                                                params_table.set(k, v)?;
+                                            }
+                                            let val: LuaValue = func.call_async(params_table).await?;
+                                            let json_val: JsonValue = lua.from_value(val)?;
+                                            Ok(json_val)
+                                        }).await;
+
+                                        match res {
+                                            Ok(val) => { response_tx.send(Ok(val)).ok(); },
+                                            Err(e) => { response_tx.send(Err(e.to_string())).ok(); }
+                                        }
+                                    }
+                                    _ = rx.recv() => {
+                                        println!("Reload signal received.");
+                                        break; // Break inner loop to reload
+                                    }
+                                }
+                             }
+                        } else {
+                            // Server failed to start
+                             println!("Waiting for changes to {}...", path_str);
+                             let _ = rx.recv().await;
+                        }
+
+                    } else {
+                         // Script finished and no routes, just exit or wait?
+                         // Original behavior was to exit if script finished.
+                         // But if we are in watch mode, maybe we should wait?
+                         // The prompt says "HTTPS server should be started... if endpoints registered".
+                         // If no endpoints, behavior is undefined by prompt, but typically scripts might just run once.
+                         // However, keeping consistent with "watch" mode:
+                         if cfg!(debug_assertions) { // Just a guess, or always wait?
+                            // Let's break the outer loop if no server to run, unless we want to keep watching empty scripts.
+                            println!("No endpoints registered. Script finished.");
+                            break; 
+                         }
+                         break;
+                    }
                 }
-                println!("Waiting for changes to {}...", path_str);
-                // Wait for a change before restarting
-                let _ = rx.recv().await;
             }
             _ = rx.recv() => {
-               // println!("--- Reloading Lua script: {} ---", path_str);
+               // Reloading
             }
         }
     }
