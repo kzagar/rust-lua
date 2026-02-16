@@ -20,9 +20,9 @@ mod tests {
         let mut lua = LuaState::new();
         let proto = Proto {
             instructions: vec![
-                Instruction(1 | (0 << 7) | (0 << 15)), // LOADK R[0] K[0]
+                Instruction(1), // LOADK R[0] K[0]
                 Instruction(1 | (1 << 7) | (1 << 15)), // LOADK R[1] K[1]
-                Instruction(33 | (2 << 7) | (0 << 15) | (1 << 24)), // ADD R[2] R[0] R[1]
+                Instruction(33 | (2 << 7) | (1 << 24)), // ADD R[2] R[0] R[1]
             ],
             k: vec![Value::Integer(10), Value::Integer(20)],
             upvalues: vec![],
@@ -80,7 +80,7 @@ mod tests {
         let global_val = {
             let mut global = lua.global.lock().unwrap();
             if let Value::Table(t) = global.globals {
-                let z_key = Value::String(global.heap.allocate("z".to_string()));
+                let z_key = Value::String(global.heap.allocate("z".to_string().into_bytes()));
                 *t.map.get(&z_key).unwrap_or(&Value::Nil)
             } else {
                 panic!("Globals is not a table");
@@ -128,7 +128,7 @@ mod tests {
         let global_val = {
             let mut global = lua.global.lock().unwrap();
             if let Value::Table(t) = global.globals {
-                let res_key = Value::String(global.heap.allocate("res".to_string()));
+                let res_key = Value::String(global.heap.allocate("res".to_string().into_bytes()));
                 *t.map.get(&res_key).unwrap_or(&Value::Nil)
             } else {
                 panic!("Globals is not a table");
@@ -177,7 +177,7 @@ mod tests {
         let global_val = {
             let mut global = lua.global.lock().unwrap();
             if let Value::Table(t) = global.globals {
-                let res_key = Value::String(global.heap.allocate("res".to_string()));
+                let res_key = Value::String(global.heap.allocate("res".to_string().into_bytes()));
                 *t.map.get(&res_key).unwrap_or(&Value::Nil)
             } else {
                 panic!("Globals is not a table");
@@ -225,7 +225,7 @@ mod tests {
         let global_val = {
             let mut global = lua.global.lock().unwrap();
             if let Value::Table(t) = global.globals {
-                let res_key = Value::String(global.heap.allocate("res".to_string()));
+                let res_key = Value::String(global.heap.allocate("res".to_string().into_bytes()));
                 *t.map.get(&res_key).unwrap_or(&Value::Nil)
             } else {
                 panic!("Globals is not a table");
@@ -233,5 +233,46 @@ mod tests {
         };
 
         assert_eq!(global_val, Value::Integer(10));
+    }
+
+    #[tokio::test]
+    async fn test_long_comment() {
+        let mut lua = LuaState::new();
+        let input = "
+            --[[
+            x = 1
+            ]]
+            res = 2
+        ";
+        let proto = {
+            let mut global = lua.global.lock().unwrap();
+            let parser = crate::parser::Parser::new(input, &mut global.heap).unwrap();
+            parser.parse_chunk().unwrap()
+        };
+
+        let closure_gc = {
+            let mut global = lua.global.lock().unwrap();
+            let globals = global.globals;
+            let proto_gc = global.heap.allocate(proto);
+            let uv = global.heap.allocate(crate::value::Upvalue { val: globals });
+            global.heap.allocate(crate::value::Closure {
+                proto: proto_gc,
+                upvalues: vec![uv],
+            })
+        };
+
+        lua.execute(closure_gc).await.unwrap();
+
+        let global_val = {
+            let mut global = lua.global.lock().unwrap();
+            if let Value::Table(t) = global.globals {
+                let res_key = Value::String(global.heap.allocate("res".to_string().into_bytes()));
+                *t.map.get(&res_key).unwrap_or(&Value::Nil)
+            } else {
+                panic!("Globals is not a table");
+            }
+        };
+
+        assert_eq!(global_val, Value::Integer(2));
     }
 }

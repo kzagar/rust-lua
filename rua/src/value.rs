@@ -1,11 +1,11 @@
-use crate::gc::{Gc, GCTrace, GcBoxHeader};
-use std::collections::{HashSet, HashMap};
+use crate::error::LuaError;
+use crate::gc::{GCTrace, Gc, GcBoxHeader};
+use crate::state::LuaState;
 use crate::vm::Proto;
 use futures::future::BoxFuture;
-use crate::error::LuaError;
-use crate::state::LuaState;
-use std::hash::{Hash, Hasher};
 use std::any::Any;
+use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 
 pub type AsyncCallback = for<'a> fn(&'a mut LuaState) -> BoxFuture<'a, Result<usize, LuaError>>;
 
@@ -38,7 +38,7 @@ pub enum Value {
     Boolean(bool),
     Integer(i64),
     Number(f64),
-    String(Gc<String>),
+    String(Gc<Vec<u8>>),
     Table(Gc<Table>),
     LuaFunction(Gc<Closure>),
     RustFunction(AsyncCallback),
@@ -106,7 +106,7 @@ impl GCTrace for Value {
                 }
             }
             Value::LuaFunction(f) => {
-                 let header_ptr = unsafe { &f.ptr.as_ref().header as *const GcBoxHeader };
+                let header_ptr = unsafe { &f.ptr.as_ref().header as *const GcBoxHeader };
                 if !marked.contains(&header_ptr) {
                     marked.insert(header_ptr);
                     f.trace(marked);
@@ -137,7 +137,10 @@ impl Default for Table {
 
 impl Table {
     pub fn new() -> Self {
-        Self { map: HashMap::new(), metatable: None }
+        Self {
+            map: HashMap::new(),
+            metatable: None,
+        }
     }
 }
 

@@ -73,9 +73,9 @@ impl GcHeap {
     }
 
     /// Collects garbage.
-    /// 
+    ///
     /// # Safety
-    /// 
+    ///
     /// This function is unsafe because it involves raw pointer manipulation and
     /// assumes that the provided roots are valid and correctly represent all
     /// reachable objects.
@@ -91,6 +91,10 @@ impl GcHeap {
 }
 
 impl GCTrace for String {
+    fn trace(&self, _marked: &mut HashSet<*const GcBoxHeader>) {}
+}
+
+impl GCTrace for Vec<u8> {
     fn trace(&self, _marked: &mut HashSet<*const GcBoxHeader>) {}
 }
 

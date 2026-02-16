@@ -25,7 +25,7 @@ pub fn lua_print(state: &mut LuaState) -> BoxFuture<'_, Result<usize, LuaError>>
                 Value::Boolean(b) => print!("{}\t", b),
                 Value::Integer(i) => print!("{}\t", i),
                 Value::Number(n) => print!("{}\t", n),
-                Value::String(s) => print!("{}\t", *s),
+                Value::String(s) => print!("{}\t", String::from_utf8_lossy(&s)),
                 Value::Table(_) => print!("table\t"),
                 Value::LuaFunction(_) => print!("function\t"),
                 Value::RustFunction(_) => print!("function\t"),
@@ -94,7 +94,8 @@ pub fn lua_load(state: &mut LuaState) -> BoxFuture<'_, Result<usize, LuaError>> 
         if let Value::String(s) = input_val {
             let res = {
                 let mut global = state.global.lock().unwrap();
-                let parser_res = crate::parser::Parser::new(&s, &mut global.heap);
+                let s_str = String::from_utf8_lossy(&s);
+                let parser_res = crate::parser::Parser::new(&s_str, &mut global.heap);
                 match parser_res {
                     Ok(parser) => parser.parse_chunk(),
                     Err(e) => Err(e),
@@ -119,7 +120,7 @@ pub fn lua_load(state: &mut LuaState) -> BoxFuture<'_, Result<usize, LuaError>> 
                 Err(e) => {
                     state.stack[start - 1] = Value::Nil;
                     let mut global = state.global.lock().unwrap();
-                    let msg_gc = global.heap.allocate(format!("{}", e));
+                    let msg_gc = global.heap.allocate(format!("{}", e).into_bytes());
                     state.stack[start] = Value::String(msg_gc);
                     Ok(2)
                 }
@@ -127,7 +128,7 @@ pub fn lua_load(state: &mut LuaState) -> BoxFuture<'_, Result<usize, LuaError>> 
         } else {
             state.stack[start - 1] = Value::Nil;
             let mut global = state.global.lock().unwrap();
-            let msg_gc = global.heap.allocate("load: expected string".to_string());
+            let msg_gc = global.heap.allocate("load: expected string".to_string().into_bytes());
             state.stack[start] = Value::String(msg_gc);
             Ok(2)
         }
@@ -140,13 +141,13 @@ pub fn open_libs(state: &mut LuaState) {
         unsafe {
             let t = &mut (*t_gc.ptr.as_ptr()).data;
 
-            let print_key = global.heap.allocate("print".to_string());
+            let print_key = global.heap.allocate("print".to_string().into_bytes());
             t.map.insert(Value::String(print_key), Value::RustFunction(lua_print));
 
-            let assert_key = global.heap.allocate("assert".to_string());
+            let assert_key = global.heap.allocate("assert".to_string().into_bytes());
             t.map.insert(Value::String(assert_key), Value::RustFunction(lua_assert));
 
-            let load_key = global.heap.allocate("load".to_string());
+            let load_key = global.heap.allocate("load".to_string().into_bytes());
             t.map.insert(Value::String(load_key), Value::RustFunction(lua_load));
         }
     }

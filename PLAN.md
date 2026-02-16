@@ -3,10 +3,10 @@
 This plan outlines the steps to improve `rua` to cover an increasing amount of the Lua 5.5 test suite.
 
 ## Phase 1: Infrastructure and Core Language Constructs
-- [ ] Create a test runner to execute `testes/` files and report status.
-- [ ] Implement `global` keyword and basic global declarations.
-- [ ] Support `<const>` and `<close>` attributes.
-- [ ] Handle `global <const> *` syntax.
+- [x] Create a test runner to execute `testes/` files and report status.
+- [x] Implement `global` keyword and basic global declarations.
+- [x] Support `<const>` and `<close>` attributes.
+- [x] Handle `global <const> *` syntax.
 
 ## Phase 2: String Manipulation
 - [ ] Implement missing `string` library functions required by `strings.lua` and `literals.lua`.
