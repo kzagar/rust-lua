@@ -1,5 +1,5 @@
 use crate::error::LuaError;
-use crate::vm::{Proto, Instruction, UpvalDesc};
+use crate::vm::{Proto, Instruction, UpvalDesc, OpCode};
 use crate::value::Value;
 use crate::gc::GcHeap;
 
@@ -19,7 +19,7 @@ enum Token {
     Assign, Dot, Comma, Semi, Colon,
     LParen, RParen, LCurly, RCurly, LBracket, RBracket,
     Concat, Dots, Len,
-    EOF,
+    Eof,
 }
 
 struct Lexer<'a> {
@@ -37,7 +37,7 @@ impl<'a> Lexer<'a> {
         self.skip_whitespace_and_comments();
         let c = match self.input.next() {
             Some(c) => c,
-            None => return Ok(Token::EOF),
+            None => return Ok(Token::Eof),
         };
 
         match c {
@@ -134,14 +134,14 @@ impl<'a> Lexer<'a> {
 
     fn skip_comment(&mut self) {
         // Skip second '-'
-        while let Some(c) = self.input.next() {
+        for c in self.input.by_ref() {
             if c == '\n' { break; }
         }
     }
 
     fn read_string(&mut self, quote: char) -> Result<Token, LuaError> {
         let mut s = String::new();
-        while let Some(c) = self.input.next() {
+        for c in self.input.by_ref() {
             if c == quote {
                 return Ok(Token::String(s));
             }
@@ -325,11 +325,11 @@ impl<'a> Parser<'a> {
     }
 
     pub fn parse_chunk(mut self) -> Result<Proto, LuaError> {
-        while self.peek() != &Token::EOF {
+        while self.peek() != &Token::Eof {
             self.parse_statement()?;
         }
         // Add implicit return
-        self.emit(70); // RETURN0
+        self.emit(OpCode::Return0 as u32); // RETURN0
         let state = self.states.pop().unwrap();
         Ok(Proto {
             instructions: state.instructions,
@@ -364,7 +364,7 @@ impl<'a> Parser<'a> {
             Token::Do => {
                 self.consume()?;
                 self.enter_scope();
-                while self.peek() != &Token::End && self.peek() != &Token::EOF {
+                while self.peek() != &Token::End && self.peek() != &Token::Eof {
                     self.parse_statement()?;
                 }
                 self.expect(Token::End)?;
@@ -416,6 +416,8 @@ impl<'a> Parser<'a> {
                 self.consume()?;
                 if let Token::Name(name) = self.consume()? {
                     names.push(name);
+                } else {
+                    return Err(LuaError::SyntaxError("expected name after comma in local declaration".to_string()));
                 }
             }
 
@@ -444,7 +446,7 @@ impl<'a> Parser<'a> {
             } else {
                 for name in names {
                     let reg = self.current_state().push_reg();
-                    self.emit(7 | ((reg as u32) << 7) | (0 << 24)); // LOADNIL
+                    self.emit(OpCode::LoadNil as u32 | ((reg as u32) << 7)); // LOADNIL
                     let state = self.current_state();
                     state.locals.push(Local {
                         name,
@@ -469,16 +471,16 @@ impl<'a> Parser<'a> {
 
     fn emit_store(&mut self, name: String, src_reg: usize) -> Result<(), LuaError> {
         if let Some(reg) = self.current_state().resolve_local(&name) {
-            self.emit(0 | ((reg as u32) << 7) | ((src_reg as u32) << 24));
+            self.emit(OpCode::Move as u32 | ((reg as u32) << 7) | ((src_reg as u32) << 24));
         } else if let Some(uv_idx) = self.resolve_upvalue(&name) {
             // SETUPVAL src_reg uv_idx
-            self.emit(9 | ((src_reg as u32) << 7) | ((uv_idx as u32) << 15));
+            self.emit(OpCode::SetUpval as u32 | ((src_reg as u32) << 7) | ((uv_idx as u32) << 15));
         } else {
             // Global (SETTABUP _ENV)
             let s_gc = self.heap.allocate(name);
             let k_name = self.current_state().add_k(Value::String(s_gc));
             // Op=14 (SETTABUP), A=0 (_ENV), B=k_name, C=src_reg, k=1
-            self.emit(14 | (0 << 7) | ((k_name as u32) << 24) | ((src_reg as u32) << 16) | (1 << 15));
+            self.emit(OpCode::SetTabUp as u32 | ((k_name as u32) << 24) | ((src_reg as u32) << 16) | (1 << 15));
         }
         Ok(())
     }
@@ -554,7 +556,7 @@ impl<'a> Parser<'a> {
                 if self.peek() == &Token::Dots {
                     self.consume()?;
                     // VARARG arg_reg 0
-                    self.emit(79 | ((arg_reg as u32) << 7) | (0 << 24));
+                    self.emit(OpCode::VarArg as u32 | ((arg_reg as u32) << 7));
                     vararg_call = true;
                     arg_count += 1;
                     break;
@@ -573,7 +575,7 @@ impl<'a> Parser<'a> {
         // CALL R[func_reg] B=arg_count+1 (or 0 if vararg) C=nresults+1
         let b = if vararg_call { 0 } else { arg_count + 1 };
         let c = (nresults + 1) as u32;
-        self.emit(67 | ((func_reg as u32) << 7) | ((b as u32) << 24) | (c << 15));
+        self.emit(OpCode::Call as u32 | ((func_reg as u32) << 7) | ((b as u32) << 24) | (c << 15));
 
         self.current_state().pop_regs(arg_count);
         Ok(())
@@ -581,15 +583,15 @@ impl<'a> Parser<'a> {
 
     fn emit_load(&mut self, name: String, dest_reg: usize) -> Result<(), LuaError> {
         if let Some(reg) = self.current_state().resolve_local(&name) {
-            self.emit(0 | ((dest_reg as u32) << 7) | ((reg as u32) << 24));
+            self.emit(OpCode::Move as u32 | ((dest_reg as u32) << 7) | ((reg as u32) << 24));
         } else if let Some(uv_idx) = self.resolve_upvalue(&name) {
             // GETUPVAL dest_reg uv_idx
-            self.emit(8 | ((dest_reg as u32) << 7) | ((uv_idx as u32) << 15));
+            self.emit(OpCode::GetUpval as u32 | ((dest_reg as u32) << 7) | ((uv_idx as u32) << 15));
         } else {
             // Global (GETTABUP _ENV)
             let s_gc = self.heap.allocate(name);
             let k_name = self.current_state().add_k(Value::String(s_gc));
-            self.emit(10 | ((dest_reg as u32) << 7) | (0 << 24) | ((k_name as u32) << 16) | (1 << 15));
+            self.emit(OpCode::GetTabUp as u32 | ((dest_reg as u32) << 7) | ((k_name as u32) << 16) | (1 << 15));
         }
         Ok(())
     }
@@ -611,7 +613,7 @@ impl<'a> Parser<'a> {
             let k_field = self.current_state().add_k(Value::String(s_gc));
             // SETFIELD A B C (SETFIELD R[A] K[B] R[C])
             // Op=17, A=table_reg, B=k_field, C=val_reg
-            self.emit(17 | ((table_reg as u32) << 7) | ((k_field as u32) << 24) | ((val_reg as u32) << 15));
+            self.emit(OpCode::SetField as u32 | ((table_reg as u32) << 7) | ((k_field as u32) << 24) | ((val_reg as u32) << 15));
 
             self.current_state().pop_regs(2);
         }
@@ -621,7 +623,7 @@ impl<'a> Parser<'a> {
     fn parse_return_statement(&mut self) -> Result<(), LuaError> {
         let mut nres = 0;
         let start_reg = self.current_state().next_reg;
-        if self.peek() != &Token::End && self.peek() != &Token::EOF && self.peek() != &Token::Else && self.peek() != &Token::Elseif && self.peek() != &Token::Until {
+        if self.peek() != &Token::End && self.peek() != &Token::Eof && self.peek() != &Token::Else && self.peek() != &Token::Elseif && self.peek() != &Token::Until {
             loop {
                 let reg = self.current_state().push_reg();
                 self.parse_expression(reg)?;
@@ -635,7 +637,7 @@ impl<'a> Parser<'a> {
         }
         // RETURN A B
         // A = start_reg, B = nres + 1
-        self.emit(69 | ((start_reg as u32) << 7) | (((nres + 1) as u32) << 24));
+        self.emit(OpCode::Return as u32 | ((start_reg as u32) << 7) | (((nres + 1) as u32) << 24));
         self.current_state().pop_regs(nres);
         Ok(())
     }
@@ -652,10 +654,8 @@ impl<'a> Parser<'a> {
                     }
                 }
             }
-        } else {
-            if let Token::Name(name) = self.consume()? {
+        } else if let Token::Name(name) = self.consume()? {
                 name_parts.push(name);
-            }
         }
 
         self.states.push(CompileState::new(false));
@@ -686,14 +686,14 @@ impl<'a> Parser<'a> {
         self.current_state().numparams = numparams;
         self.current_state().is_vararg = is_vararg;
         if is_vararg {
-            self.emit(80 | ((numparams as u32) << 7)); // VARARGPREP
+            self.emit(OpCode::VarArgPrep as u32 | ((numparams as u32) << 7)); // VARARGPREP
         }
 
-        while self.peek() != &Token::End && self.peek() != &Token::EOF {
+        while self.peek() != &Token::End && self.peek() != &Token::Eof {
             self.parse_statement()?;
         }
         self.expect(Token::End)?;
-        self.emit(70); // RETURN0
+        self.emit(OpCode::Return0 as u32); // RETURN0
 
         let state = self.states.pop().unwrap();
         let proto = Proto {
@@ -712,7 +712,7 @@ impl<'a> Parser<'a> {
         parent_state.protos.push(proto_gc);
 
         let dest_reg = parent_state.push_reg();
-        self.emit(78 | ((dest_reg as u32) << 7) | ((proto_idx as u32) << 15));
+        self.emit(OpCode::Closure as u32 | ((dest_reg as u32) << 7) | ((proto_idx as u32) << 15));
 
         if is_local {
             let state = self.current_state();
@@ -731,7 +731,7 @@ impl<'a> Parser<'a> {
             self.emit_load(name_parts[0].clone(), table_reg)?;
             let s_gc = self.heap.allocate(name_parts[1].clone());
             let k_field = self.current_state().add_k(Value::String(s_gc));
-            self.emit(17 | ((table_reg as u32) << 7) | ((k_field as u32) << 24) | ((dest_reg as u32) << 15));
+            self.emit(OpCode::SetField as u32 | ((table_reg as u32) << 7) | ((k_field as u32) << 24) | ((dest_reg as u32) << 15));
             self.current_state().pop_regs(2);
         } else {
              // Anonymous - leave it in dest_reg
@@ -783,10 +783,10 @@ impl<'a> Parser<'a> {
             self.consume()?;
             self.parse_unary(dest_reg)?;
             match token {
-                Token::Minus => self.emit(48 | ((dest_reg as u32) << 7) | ((dest_reg as u32) << 24)),
-                Token::Not => self.emit(50 | ((dest_reg as u32) << 7) | ((dest_reg as u32) << 24)),
-                Token::Len => self.emit(51 | ((dest_reg as u32) << 7) | ((dest_reg as u32) << 24)),
-                Token::BXor => self.emit(49 | ((dest_reg as u32) << 7) | ((dest_reg as u32) << 24)), // BNOT
+                Token::Minus => self.emit(OpCode::Unm as u32 | ((dest_reg as u32) << 7) | ((dest_reg as u32) << 24)),
+                Token::Not => self.emit(OpCode::Not as u32 | ((dest_reg as u32) << 7) | ((dest_reg as u32) << 24)),
+                Token::Len => self.emit(OpCode::Len as u32 | ((dest_reg as u32) << 7) | ((dest_reg as u32) << 24)),
+                Token::BXor => self.emit(OpCode::BNot as u32 | ((dest_reg as u32) << 7) | ((dest_reg as u32) << 24)), // BNOT
                 _ => unreachable!(),
             }
         } else {
@@ -798,31 +798,31 @@ impl<'a> Parser<'a> {
     fn parse_primary(&mut self, dest_reg: usize) -> Result<(), LuaError> {
         match self.consume()? {
             Token::Integer(i) => {
-                if i >= -32768 && i <= 32767 {
+                if (-32768..=32767).contains(&i) {
                     let val = (i + 0xFFFF) as u32; // Simplified signed handling
-                    self.emit(2 | ((dest_reg as u32) << 7) | (val << 15));
+                    self.emit(OpCode::LoadI as u32 | ((dest_reg as u32) << 7) | (val << 15));
                 } else {
                     let k = self.current_state().add_k(Value::Integer(i));
-                    self.emit(1 | ((dest_reg as u32) << 7) | ((k as u32) << 15));
+                    self.emit(OpCode::LoadK as u32 | ((dest_reg as u32) << 7) | ((k as u32) << 15));
                 }
             }
             Token::Number(n) => {
                 let k = self.current_state().add_k(Value::Number(n));
-                self.emit(1 | ((dest_reg as u32) << 7) | ((k as u32) << 15));
+                self.emit(OpCode::LoadK as u32 | ((dest_reg as u32) << 7) | ((k as u32) << 15));
             }
             Token::String(s) => {
                 let s_gc = self.heap.allocate(s);
                 let k = self.current_state().add_k(Value::String(s_gc));
-                self.emit(1 | ((dest_reg as u32) << 7) | ((k as u32) << 15));
+                self.emit(OpCode::LoadK as u32 | ((dest_reg as u32) << 7) | ((k as u32) << 15));
             }
             Token::True => {
-                self.emit(6 | ((dest_reg as u32) << 7) | (1 << 24));
+                self.emit(OpCode::LoadTrue as u32 | ((dest_reg as u32) << 7) | (1 << 24));
             }
             Token::False => {
-                self.emit(4 | ((dest_reg as u32) << 7));
+                self.emit(OpCode::LoadFalse as u32 | ((dest_reg as u32) << 7));
             }
             Token::Nil => {
-                self.emit(7 | ((dest_reg as u32) << 7) | (0 << 24));
+                self.emit(OpCode::LoadNil as u32 | ((dest_reg as u32) << 7));
             }
             Token::Name(name) => {
                 self.emit_load(name, dest_reg)?;
@@ -832,7 +832,7 @@ impl<'a> Parser<'a> {
             }
             Token::Dots => {
                 // VARARG dest_reg 2 (load 1 vararg)
-                self.emit(79 | ((dest_reg as u32) << 7) | (2 << 24));
+                self.emit(OpCode::VarArg as u32 | ((dest_reg as u32) << 7) | (2 << 24));
             }
             Token::Function => {
                 // Anonymous function
@@ -845,7 +845,7 @@ impl<'a> Parser<'a> {
                 // We want it in dest_reg.
                 let last_reg = self.current_state().next_reg - 1;
                 if last_reg != dest_reg {
-                    self.emit(0 | ((dest_reg as u32) << 7) | ((last_reg as u32) << 24));
+                    self.emit(((dest_reg as u32) << 7) | ((last_reg as u32) << 24));
                     self.current_state().pop_regs(1);
                 }
             }
@@ -860,25 +860,25 @@ impl<'a> Parser<'a> {
 
     fn emit_binop(&mut self, op: Token, dest: usize, left: usize, right: usize) -> Result<(), LuaError> {
         let opcode = match op {
-            Token::Plus => 33,
-            Token::Minus => 34,
-            Token::Mul => 35,
-            Token::Mod => 36,
-            Token::Pow => 37,
-            Token::Div => 38,
-            Token::IDiv => 39,
-            Token::BAnd => 40,
-            Token::BOr => 41,
-            Token::BXor => 42,
-            Token::Shl => 43,
-            Token::Shr => 44,
-            Token::Concat => 52,
-            Token::Eq => 56,
-            Token::Ne => 56,
-            Token::Lt => 57,
-            Token::Gt => 57,
-            Token::Le => 58,
-            Token::Ge => 58,
+            Token::Plus => OpCode::Add as u32,
+            Token::Minus => OpCode::Sub as u32,
+            Token::Mul => OpCode::Mul as u32,
+            Token::Mod => OpCode::Mod as u32,
+            Token::Pow => OpCode::Pow as u32,
+            Token::Div => OpCode::Div as u32,
+            Token::IDiv => OpCode::IDiv as u32,
+            Token::BAnd => OpCode::BAnd as u32,
+            Token::BOr => OpCode::BOr as u32,
+            Token::BXor => OpCode::BXor as u32,
+            Token::Shl => OpCode::Shl as u32,
+            Token::Shr => OpCode::Shr as u32,
+            Token::Concat => OpCode::Concat as u32,
+            Token::Eq => OpCode::Eq as u32,
+            Token::Ne => OpCode::Eq as u32,
+            Token::Lt => OpCode::Lt as u32,
+            Token::Gt => OpCode::Lt as u32,
+            Token::Le => OpCode::Le as u32,
+            Token::Ge => OpCode::Le as u32,
             _ => return Err(LuaError::SyntaxError(format!("operator {:?} not yet fully supported in expressions", op))),
         };
         let d = dest as u32;

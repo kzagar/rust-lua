@@ -1,53 +1,61 @@
 use rua::LuaState;
-use rua::value::Value;
-use rua::stdlib::{lua_print, lua_yield};
-use rua::vm::{Proto, Instruction};
+use rua::parser::Parser;
+use clap::Parser as ClapParser;
+use std::path::PathBuf;
+use std::fs;
 use rua::state::ThreadStatus;
-use tokio;
+
+#[derive(ClapParser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// Lua file to execute
+    file: PathBuf,
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut lua = LuaState::new();
+    let args = Args::parse();
 
-    // Proto:
-    // CALL lua_print (stack[0])
-    // CALL lua_yield (stack[1])
-    // CALL lua_print (stack[0])
-    let proto = Proto {
-        instructions: vec![
-            Instruction(67 | (0 << 7) | (1 << 24) | (1 << 15)), // CALL stack[0], B=1, C=1
-            Instruction(67 | (1 << 7) | (1 << 24) | (1 << 15)), // CALL stack[1] (yield)
-            Instruction(67 | (0 << 7) | (1 << 24) | (1 << 15)), // CALL stack[0]
-        ],
-        k: vec![],
-        upvalues: vec![],
-        protos: vec![],
-        numparams: 0,
-        is_vararg: false,
-        maxstacksize: 2,
+    // Read Lua file
+    let input = fs::read_to_string(&args.file)?;
+
+    let mut lua = LuaState::new();
+    
+    // Open standard libraries (print, etc.)
+    rua::stdlib::open_libs(&mut lua);
+
+    // Parse the Lua script
+    let proto = {
+        let mut global = lua.global.lock().unwrap();
+        let parser = Parser::new(&input, &mut global.heap)?;
+        parser.parse_chunk()?
     };
 
+    // Prepare the main closure with _ENV as the first upvalue
     let closure_gc = {
         let mut global = lua.global.lock().unwrap();
+        let globals = global.globals;
         let proto_gc = global.heap.allocate(proto);
+        let uv = global.heap.allocate(rua::value::Upvalue { val: globals });
         global.heap.allocate(rua::value::Closure {
             proto: proto_gc,
-            upvalues: vec![],
+            upvalues: vec![uv],
         })
     };
 
-    lua.stack[0] = Value::RustFunction(lua_print);
-    lua.stack[1] = Value::RustFunction(lua_yield);
-
-    println!("Running Lua VM...");
-    lua.execute(closure_gc).await?;
-
-    if lua.status == ThreadStatus::Yield {
-        println!("Lua VM yielded! Resuming...");
-        lua.resume().await?;
+    println!("Executing {}...", args.file.display());
+    if let Err(e) = lua.execute(closure_gc).await {
+        eprintln!("Lua Execution Error: {}", e);
+        std::process::exit(1);
     }
 
-    println!("Lua VM finished");
+    // Handle yields if any
+    while lua.status == ThreadStatus::Yield {
+        if let Err(e) = lua.resume().await {
+            eprintln!("Lua Execution Error (after yield): {}", e);
+            std::process::exit(1);
+        }
+    }
 
     Ok(())
 }

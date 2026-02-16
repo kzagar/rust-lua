@@ -129,6 +129,12 @@ pub struct Table {
     pub metatable: Option<Gc<Table>>,
 }
 
+impl Default for Table {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Table {
     pub fn new() -> Self {
         Self { map: HashMap::new(), metatable: None }

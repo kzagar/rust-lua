@@ -5,15 +5,23 @@ use futures::future::{BoxFuture, FutureExt};
 
 pub fn lua_print(state: &mut LuaState) -> BoxFuture<'_, Result<usize, LuaError>> {
     async move {
-        // In Lua 5.4, print arguments are on the stack.
-        // For simplicity, we'll print stack[1] and onwards if we knew how many args.
-        // But our current CALL opcode doesn't pass nres/nargs easily to the Rust function yet.
-        // Let's just print what's at stack[1] for now, or all non-nil values above the function.
-        let mut i = 1;
-        while i < state.stack.len() {
+        // Find the range of arguments on the stack.
+        // In our VM, a Rust function is called from a Lua frame.
+        // The CALL instruction's 'a' register points to the function,
+        // and arguments follow immediately after.
+        let (start, end) = if let Some(frame) = state.frames.last() {
+            let inst = frame.closure.proto.instructions[frame.pc - 1];
+            let func_idx = frame.base + inst.a() as usize;
+            (func_idx + 1, state.top)
+        } else {
+            // Fallback for top-level calls (though execute() pushes a frame)
+            (1, state.top)
+        };
+
+        for i in start..end {
             let val = state.stack[i];
             match val {
-                Value::Nil => break,
+                Value::Nil => print!("nil\t"),
                 Value::Boolean(b) => print!("{}\t", b),
                 Value::Integer(i) => print!("{}\t", i),
                 Value::Number(n) => print!("{}\t", n),
@@ -23,7 +31,9 @@ pub fn lua_print(state: &mut LuaState) -> BoxFuture<'_, Result<usize, LuaError>>
                 Value::RustFunction(_) => print!("function\t"),
                 Value::UserData(_) => print!("userdata\t"),
             }
-            i += 1;
+            if i < end - 1 {
+                print!("\t");
+            }
         }
         println!();
         Ok(0)

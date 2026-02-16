@@ -31,6 +31,12 @@ pub enum ThreadStatus {
     Error,
 }
 
+impl Default for LuaState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LuaState {
     pub fn new() -> Self {
         let mut heap = GcHeap::new();

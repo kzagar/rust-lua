@@ -48,6 +48,12 @@ pub struct GcHeap {
     all_objects: Option<NonNull<GcBox<dyn GCTrace>>>,
 }
 
+impl Default for GcHeap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GcHeap {
     pub fn new() -> Self {
         Self { all_objects: None }
@@ -66,6 +72,13 @@ impl GcHeap {
         Gc { ptr }
     }
 
+    /// Collects garbage.
+    /// 
+    /// # Safety
+    /// 
+    /// This function is unsafe because it involves raw pointer manipulation and
+    /// assumes that the provided roots are valid and correctly represent all
+    /// reachable objects.
     pub unsafe fn collect(&mut self, roots: &[&dyn GCTrace]) {
         let mut marked = HashSet::new();
         for root in roots {
@@ -80,3 +93,6 @@ impl GcHeap {
 impl GCTrace for String {
     fn trace(&self, _marked: &mut HashSet<*const GcBoxHeader>) {}
 }
+
+unsafe impl Send for GcHeap {}
+unsafe impl Sync for GcHeap {}

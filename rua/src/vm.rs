@@ -91,6 +91,17 @@ pub enum OpCode {
     ExtraArg = 81,
 }
 
+impl TryFrom<u32> for OpCode {
+    type Error = ();
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        if value <= 81 {
+            Ok(unsafe { std::mem::transmute::<u32, OpCode>(value) })
+        } else {
+            Err(())
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Instruction(pub u32);
 
@@ -156,9 +167,9 @@ impl GCTrace for Proto {
 }
 
 impl LuaState {
-    fn execute_binop(&self, opcode: u32, op1: Value, op2: Value) -> Result<Value, LuaError> {
+    fn execute_binop(&self, opcode: OpCode, op1: Value, op2: Value) -> Result<Value, LuaError> {
         match opcode {
-            33 => { // ADD
+            OpCode::Add => { // ADD
                 match (op1, op2) {
                     (Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a + b)),
                     (Value::Number(a), Value::Number(b)) => Ok(Value::Number(a + b)),
@@ -167,7 +178,7 @@ impl LuaState {
                     _ => Err(LuaError::RuntimeError("invalid types for ADD".to_string())),
                 }
             }
-            34 => { // SUB
+            OpCode::Sub => { // SUB
                 match (op1, op2) {
                     (Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a - b)),
                     (Value::Number(a), Value::Number(b)) => Ok(Value::Number(a - b)),
@@ -176,7 +187,7 @@ impl LuaState {
                     _ => Err(LuaError::RuntimeError("invalid types for SUB".to_string())),
                 }
             }
-            35 => { // MUL
+            OpCode::Mul => { // MUL
                 match (op1, op2) {
                     (Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a * b)),
                     (Value::Number(a), Value::Number(b)) => Ok(Value::Number(a * b)),
@@ -185,55 +196,55 @@ impl LuaState {
                     _ => Err(LuaError::RuntimeError("invalid types for MUL".to_string())),
                 }
             }
-            36 => { // MOD
+            OpCode::Mod => { // MOD
                 match (op1, op2) {
                     (Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a % b)),
                     (Value::Number(a), Value::Number(b)) => Ok(Value::Number(a % b)),
                     _ => Err(LuaError::RuntimeError("invalid types for MOD".to_string())),
                 }
             }
-            37 => { // POW
+            OpCode::Pow => { // POW
                 let a = match op1 { Value::Integer(i) => i as f64, Value::Number(n) => n, _ => return Err(LuaError::RuntimeError("invalid types for POW".to_string())) };
                 let b = match op2 { Value::Integer(i) => i as f64, Value::Number(n) => n, _ => return Err(LuaError::RuntimeError("invalid types for POW".to_string())) };
                 Ok(Value::Number(a.powf(b)))
             }
-            38 => { // DIV
+            OpCode::Div => { // DIV
                 let a = match op1 { Value::Integer(i) => i as f64, Value::Number(n) => n, _ => return Err(LuaError::RuntimeError("invalid types for DIV".to_string())) };
                 let b = match op2 { Value::Integer(i) => i as f64, Value::Number(n) => n, _ => return Err(LuaError::RuntimeError("invalid types for DIV".to_string())) };
                 Ok(Value::Number(a / b))
             }
-            39 => { // IDIV
+            OpCode::IDiv => { // IDIV
                 match (op1, op2) {
                     (Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a / b)),
                     (Value::Number(a), Value::Number(b)) => Ok(Value::Number((a / b).floor())),
                     _ => Err(LuaError::RuntimeError("invalid types for IDIV".to_string())),
                 }
             }
-            40 => { // BAND
+            OpCode::BAnd => { // BAND
                 match (op1, op2) {
                     (Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a & b)),
                     _ => Err(LuaError::RuntimeError("invalid types for BAND".to_string())),
                 }
             }
-            41 => { // BOR
+            OpCode::BOr => { // BOR
                 match (op1, op2) {
                     (Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a | b)),
                     _ => Err(LuaError::RuntimeError("invalid types for BOR".to_string())),
                 }
             }
-            42 => { // BXOR
+            OpCode::BXor => { // BXOR
                 match (op1, op2) {
                     (Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a ^ b)),
                     _ => Err(LuaError::RuntimeError("invalid types for BXOR".to_string())),
                 }
             }
-            43 => { // SHL
+            OpCode::Shl => { // SHL
                 match (op1, op2) {
                     (Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a << b)),
                     _ => Err(LuaError::RuntimeError("invalid types for SHL".to_string())),
                 }
             }
-            44 => { // SHR
+            OpCode::Shr => { // SHR
                 match (op1, op2) {
                     (Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a >> b)),
                     _ => Err(LuaError::RuntimeError("invalid types for SHR".to_string())),
@@ -359,45 +370,47 @@ impl LuaState {
                     }
                 };
 
-                match inst.opcode() {
-                    0 => { // MOVE
+                let opcode = inst.opcode();
+                let op = OpCode::try_from(opcode).map_err(|_| LuaError::RuntimeError(format!("unimplemented opcode {}", opcode)))?;
+                match op {
+                    OpCode::Move => { // MOVE
                         let a = inst.a() as usize;
                         let b = inst.b() as usize;
                         self.stack[base + a] = self.stack[base + b];
                     }
-                    1 => { // LOADK
+                    OpCode::LoadK => { // LOADK
                         let a = inst.a() as usize;
                         let bx = inst.bx() as usize;
                         let frame = self.frames.last().unwrap();
                         self.stack[base + a] = frame.closure.proto.k[bx];
                     }
-                    2 => { // LOADI
+                    OpCode::LoadI => { // LOADI
                         let a = inst.a() as usize;
                         let sbx = inst.sbx();
                         self.stack[base + a] = Value::Integer(sbx as i64);
                     }
-                    4 => { // LOADFALSE
+                    OpCode::LoadFalse => { // LOADFALSE
                         let a = inst.a() as usize;
                         self.stack[base + a] = Value::Boolean(false);
                     }
-                    6 => { // LOADTRUE
+                    OpCode::LoadTrue => { // LOADTRUE
                         let a = inst.a() as usize;
                         self.stack[base + a] = Value::Boolean(true);
                     }
-                    7 => { // LOADNIL
+                    OpCode::LoadNil => { // LOADNIL
                         let a = inst.a() as usize;
                         let b = inst.b() as usize;
                         for i in a..=a + b {
                             self.stack[base + i] = Value::Nil;
                         }
                     }
-                    8 => { // GETUPVAL
+                    OpCode::GetUpval => { // GETUPVAL
                         let a = inst.a() as usize;
                         let b = inst.b() as usize;
                         let frame = self.frames.last().unwrap();
                         self.stack[base + a] = frame.closure.upvalues[b].val;
                     }
-                    9 => { // SETUPVAL
+                    OpCode::SetUpval => { // SETUPVAL
                         let a = inst.a() as usize;
                         let b = inst.b() as usize;
                         let frame = self.frames.last().unwrap();
@@ -406,7 +419,7 @@ impl LuaState {
                             uv.data.val = self.stack[base + a];
                         }
                     }
-                    10 => { // GETTABUP
+                    OpCode::GetTabUp => { // GETTABUP
                         let a = inst.a() as usize;
                         let b = inst.b() as usize;
                         let c = inst.c() as usize;
@@ -419,7 +432,7 @@ impl LuaState {
                         };
                         self.stack[base + a] = self.get_table_internal(env, key).await?;
                     }
-                    11 => { // GETTABLE
+                    OpCode::GetTable => { // GETTABLE
                         let a = inst.a() as usize;
                         let b = inst.b() as usize;
                         let c = inst.c() as usize;
@@ -427,7 +440,7 @@ impl LuaState {
                         let key = self.stack[base + c];
                         self.stack[base + a] = self.get_table_internal(t, key).await?;
                     }
-                    12 => { // GETI
+                    OpCode::GetI => { // GETI
                         let a = inst.a() as usize;
                         let b = inst.b() as usize;
                         let c = inst.c() as usize;
@@ -435,7 +448,7 @@ impl LuaState {
                         let key = Value::Integer(c as i64);
                         self.stack[base + a] = self.get_table_internal(t, key).await?;
                     }
-                    13 => { // GETFIELD
+                    OpCode::GetField => { // GETFIELD
                         let a = inst.a() as usize;
                         let b = inst.b() as usize;
                         let c = inst.c() as usize;
@@ -444,7 +457,7 @@ impl LuaState {
                         let key = frame.closure.proto.k[c];
                         self.stack[base + a] = self.get_table_internal(t, key).await?;
                     }
-                    19 => { // SELF
+                    OpCode::SelfOp => { // SELF
                         let a = inst.a() as usize;
                         let b = inst.b() as usize;
                         let c = inst.c() as usize;
@@ -458,7 +471,7 @@ impl LuaState {
                         };
                         self.stack[base + a] = self.get_table_internal(t, key).await?;
                     }
-                    14 => { // SETTABUP
+                    OpCode::SetTabUp => { // SETTABUP
                         let a = inst.a() as usize;
                         let b = inst.b() as usize;
                         let c = inst.c() as usize;
@@ -483,7 +496,8 @@ impl LuaState {
                             return Err(LuaError::RuntimeError("SETTABUP: env is not a table".to_string()));
                         }
                     }
-                    33..=44 => { // Binary arithmetic/bitwise
+                    OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Mod | OpCode::Pow | OpCode::Div | OpCode::IDiv | 
+                    OpCode::BAnd | OpCode::BOr | OpCode::BXor | OpCode::Shl | OpCode::Shr => { // Binary arithmetic/bitwise
                         let a = inst.a() as usize;
                         let b = inst.b() as usize;
                         let c = inst.c() as usize;
@@ -494,9 +508,9 @@ impl LuaState {
                         } else {
                              self.stack[base + (c >> 1)]
                         };
-                        self.stack[base + a] = self.execute_binop(inst.opcode(), op1, op2)?;
+                        self.stack[base + a] = self.execute_binop(op, op1, op2)?;
                     }
-                    48 => { // UNM
+                    OpCode::Unm => { // UNM
                         let a = inst.a() as usize;
                         let b = inst.b() as usize;
                         self.stack[base + a] = match self.stack[base + b] {
@@ -505,7 +519,7 @@ impl LuaState {
                             _ => return Err(LuaError::RuntimeError("invalid type for UNM".to_string())),
                         };
                     }
-                    49 => { // BNOT
+                    OpCode::BNot => { // BNOT
                         let a = inst.a() as usize;
                         let b = inst.b() as usize;
                         if let Value::Integer(i) = self.stack[base + b] {
@@ -514,7 +528,7 @@ impl LuaState {
                             return Err(LuaError::RuntimeError("invalid type for BNOT".to_string()));
                         }
                     }
-                    50 => { // NOT
+                    OpCode::Not => { // NOT
                         let a = inst.a() as usize;
                         let b = inst.b() as usize;
                         self.stack[base + a] = match self.stack[base + b] {
@@ -522,7 +536,7 @@ impl LuaState {
                             _ => Value::Boolean(false),
                         };
                     }
-                    51 => { // LEN
+                    OpCode::Len => { // LEN
                         let a = inst.a() as usize;
                         let b = inst.b() as usize;
                         self.stack[base + a] = match self.stack[base + b] {
@@ -531,7 +545,7 @@ impl LuaState {
                             _ => return Err(LuaError::RuntimeError("invalid type for LEN".to_string())),
                         };
                     }
-                    52 => { // CONCAT
+                    OpCode::Concat => { // CONCAT
                         let a = inst.a() as usize;
                         let b = inst.b() as usize;
                         let s1 = format!("{:?}", self.stack[base + a]);
@@ -540,15 +554,15 @@ impl LuaState {
                         let s_gc = global.heap.allocate(s1 + &s2);
                         self.stack[base + a] = Value::String(s_gc);
                     }
-                    56..=58 => { // Relational
+                    OpCode::Eq | OpCode::Lt | OpCode::Le => { // Relational
                         let a = inst.a() as usize;
                         let b = inst.b() as usize;
                         let op1 = self.stack[base + a];
                         let op2 = self.stack[base + b];
-                        let res = match inst.opcode() {
-                            56 => op1 == op2,
-                            57 => self.execute_lt(op1, op2)?,
-                            58 => self.execute_le(op1, op2)?,
+                        let res = match op {
+                            OpCode::Eq => op1 == op2,
+                            OpCode::Lt => self.execute_lt(op1, op2)?,
+                            OpCode::Le => self.execute_le(op1, op2)?,
                             _ => unreachable!(),
                         };
                         let k = inst.k();
@@ -557,7 +571,7 @@ impl LuaState {
                             frame.pc += 1;
                         }
                     }
-                    67 => { // CALL
+                    OpCode::Call => { // CALL
                         let a = inst.a() as usize;
                         let b = inst.b() as usize;
                         let c = inst.c() as usize;
@@ -635,7 +649,7 @@ impl LuaState {
                             _ => return Err(LuaError::RuntimeError("attempt to call a non-function".to_string())),
                         }
                     }
-                    69 | 70 | 71 => { // RETURN
+                    OpCode::Return | OpCode::Return0 | OpCode::Return1 => { // RETURN
                         let a = inst.a() as usize;
                         let b = inst.b() as usize;
                         let frame = self.frames.pop().unwrap();
@@ -670,7 +684,7 @@ impl LuaState {
                             return Ok(());
                         }
                     }
-                    78 => { // CLOSURE
+                    OpCode::Closure => { // CLOSURE
                         let a = inst.a() as usize;
                         let bx = inst.bx() as usize;
                         let frame = self.frames.last().unwrap();
@@ -690,7 +704,7 @@ impl LuaState {
                         });
                         self.stack[base + a] = Value::LuaFunction(closure);
                     }
-                    79 => { // VARARG
+                    OpCode::VarArg => { // VARARG
                         let a = inst.a() as usize;
                         let b = inst.b() as usize;
                         let frame = self.frames.last().unwrap();
@@ -710,12 +724,12 @@ impl LuaState {
                             self.top = base + a + n;
                         }
                     }
-                    80 => { // VARARGPREP
+                    OpCode::VarArgPrep => { // VARARGPREP
                         // In our simplified CALL, we already moved varargs to frame.varargs.
                         // We just need to ensure the stack is clean for the fixed params.
                         // Actually, CALL already puts fixed params at base, base+1, ...
                     }
-                    17 => { // SETFIELD
+                    OpCode::SetField => { // SETFIELD
                         let a = inst.a() as usize;
                         let b = inst.b() as usize;
                         let c = inst.c() as usize;
@@ -732,7 +746,7 @@ impl LuaState {
                             return Err(LuaError::RuntimeError("SETFIELD: target is not a table".to_string()));
                         }
                     }
-                    _ => return Err(LuaError::RuntimeError(format!("unimplemented opcode {}", inst.opcode()))),
+                    _ => return Err(LuaError::RuntimeError(format!("unimplemented opcode {:?}", op))),
                 }
             }
             Ok(())
