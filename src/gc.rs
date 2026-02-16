@@ -20,6 +20,12 @@ pub struct Gc<T: Trace + ?Sized> {
     pub ptr: NonNull<GcBox<T>>,
 }
 
+impl<T: Trace + ?Sized> std::fmt::Debug for Gc<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Gc({:p})", self.ptr.as_ptr())
+    }
+}
+
 impl<T: Trace + ?Sized> Clone for Gc<T> {
     fn clone(&self) -> Self {
         *self
@@ -27,6 +33,9 @@ impl<T: Trace + ?Sized> Clone for Gc<T> {
 }
 
 impl<T: Trace + ?Sized> Copy for Gc<T> {}
+
+unsafe impl<T: Trace + ?Sized> Send for Gc<T> {}
+unsafe impl<T: Trace + ?Sized> Sync for Gc<T> {}
 
 impl<T: Trace + ?Sized> std::ops::Deref for Gc<T> {
     type Target = T;
