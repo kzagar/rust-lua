@@ -87,7 +87,9 @@ impl LuaUserData for DriveFile {
                 }
 
                 let mut bytes = Vec::new();
-                res.into_reader().read_to_end(&mut bytes).map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+                res.into_reader()
+                    .read_to_end(&mut bytes)
+                    .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
                 bytes
             } else {
                 return Err(LuaError::RuntimeError("No data in file object".into()));
@@ -148,7 +150,9 @@ impl LuaUserData for Drive {
             .map_err(|e| LuaError::RuntimeError(e.to_string()))?
             .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
-            let json: serde_json::Value = res.into_json().map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+            let json: serde_json::Value = res
+                .into_json()
+                .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
             let files_json = json
                 .get("files")
                 .and_then(|f| f.as_array())
@@ -195,7 +199,9 @@ impl LuaUserData for Drive {
             .await
             .map_err(|e| LuaError::RuntimeError(e.to_string()))?
             .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
-            let metadata: serde_json::Value = res_meta.into_json().map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+            let metadata: serde_json::Value = res_meta
+                .into_json()
+                .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
             // Get content
             let url_media = format!("https://www.googleapis.com/drive/v3/files/{}?alt=media", id);
@@ -216,7 +222,10 @@ impl LuaUserData for Drive {
             }
 
             let mut bytes = Vec::new();
-            res_media.into_reader().read_to_end(&mut bytes).map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+            res_media
+                .into_reader()
+                .read_to_end(&mut bytes)
+                .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
             Ok(DriveFile {
                 id: Some(id),
@@ -304,7 +313,8 @@ impl LuaUserData for Drive {
                 .map_err(|e| LuaError::RuntimeError(e.to_string()))?
                 .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
-                let json: serde_json::Value = res_check.into_json()
+                let json: serde_json::Value = res_check
+                    .into_json()
                     .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
                 let files = json.get("files").and_then(|f| f.as_array()).unwrap();
 
@@ -431,7 +441,8 @@ async fn resolve_path(state: Arc<GmailState>, email: &str, path: &str) -> LuaRes
         .map_err(|e| LuaError::RuntimeError(e.to_string()))?
         .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
-        let json: serde_json::Value = res.into_json()
+        let json: serde_json::Value = res
+            .into_json()
             .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
         let files = json
             .get("files")

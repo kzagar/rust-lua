@@ -113,15 +113,14 @@ pub async fn start(
             match res {
                 Ok(Ok(resp)) => {
                     if resp.status() >= 200 && resp.status() < 300 {
-                        let json: JsonValue =
-                            match resp.into_json() {
-                                Ok(j) => j,
-                                Err(e) => {
-                                    eprintln!("Failed to parse telegram updates: {}", e);
-                                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                                    continue;
-                                }
-                            };
+                        let json: JsonValue = match resp.into_json() {
+                            Ok(j) => j,
+                            Err(e) => {
+                                eprintln!("Failed to parse telegram updates: {}", e);
+                                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                                continue;
+                            }
+                        };
 
                         if let Some(updates) = json.get("result").and_then(|r| r.as_array()) {
                             for update in updates {
@@ -140,10 +139,7 @@ pub async fn start(
                             }
                         }
                     } else {
-                        eprintln!(
-                            "Telegram getUpdates failed with status: {}",
-                            resp.status()
-                        );
+                        eprintln!("Telegram getUpdates failed with status: {}", resp.status());
                         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                     }
                 }

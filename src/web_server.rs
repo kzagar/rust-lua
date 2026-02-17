@@ -533,7 +533,7 @@ async fn forward_request(proxy: ReverseProxyInfo, req: Request) -> Response {
 
     let status = res.status();
     let mut response_builder = Response::builder().status(status as u16);
-    
+
     // Copy headers from ureq response to axum response
     for name in res.headers_names() {
         if let Some(value) = res.header(&name) {
@@ -543,7 +543,11 @@ async fn forward_request(proxy: ReverseProxyInfo, req: Request) -> Response {
 
     let mut response_body = Vec::new();
     if res.into_reader().read_to_end(&mut response_body).is_err() {
-        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to read response body").into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to read response body",
+        )
+            .into_response();
     }
 
     response_builder

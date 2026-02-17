@@ -94,8 +94,9 @@ impl IbkrState {
             expires_in: u64,
         }
 
-        let token_resp: TokenResponse = resp.into_json()
-            .map_err(|e| LuaError::RuntimeError(format!("Failed to parse token response: {}", e)))?;
+        let token_resp: TokenResponse = resp.into_json().map_err(|e| {
+            LuaError::RuntimeError(format!("Failed to parse token response: {}", e))
+        })?;
 
         self.access_token = Some(token_resp.access_token.clone());
         self.token_expiry = Some(Instant::now() + Duration::from_secs(token_resp.expires_in));

@@ -85,7 +85,9 @@ impl LuaUserData for Mailbox {
                 .map_err(|e| LuaError::RuntimeError(e.to_string()))?
                 .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
-                let json: serde_json::Value = res.into_json().map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+                let json: serde_json::Value = res
+                    .into_json()
+                    .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
                 let messages = lua.create_table()?;
                 if let Some(msgs) = json.get("messages").and_then(|m| m.as_array()) {
@@ -117,7 +119,9 @@ impl LuaUserData for Mailbox {
             .map_err(|e| LuaError::RuntimeError(e.to_string()))?
             .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
-            let json: serde_json::Value = res.into_json().map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+            let json: serde_json::Value = res
+                .into_json()
+                .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
             let message = Message {
                 id: id.clone(),
@@ -170,7 +174,9 @@ impl LuaUserData for Mailbox {
                 .map_err(|e| LuaError::RuntimeError(e.to_string()))?
                 .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
-                let json: serde_json::Value = res.into_json().map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+                let json: serde_json::Value = res
+                    .into_json()
+                    .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
                 Ok(json
                     .get("id")
                     .and_then(|v: &serde_json::Value| v.as_str())
@@ -180,7 +186,7 @@ impl LuaUserData for Mailbox {
 
         methods.add_async_method("send_draft", |_, mailbox, draft_id: String| async move {
             let token = get_valid_token(mailbox.state.clone(), &mailbox.email).await?;
-            
+
             let res = tokio::task::spawn_blocking(move || {
                 ureq::post("https://gmail.googleapis.com/gmail/v1/users/me/drafts/send")
                     .set("Authorization", &format!("Bearer {}", token))
@@ -388,7 +394,9 @@ impl LuaUserData for Message {
                     .map_err(|e| LuaError::RuntimeError(e.to_string()))?
                     .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
-                    let json: serde_json::Value = res.into_json().map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+                    let json: serde_json::Value = res
+                        .into_json()
+                        .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
                     if let Some(data) = json
                         .get("data")
                         .and_then(|v: &serde_json::Value| v.as_str())
