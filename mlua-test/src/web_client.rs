@@ -1,6 +1,7 @@
 use mlua::prelude::*;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 pub struct HttpClient {
     insecure: bool,
@@ -32,43 +33,45 @@ impl LuaUserData for HttpClient {
                     }
 
                     let res = tokio::task::spawn_blocking(move || {
-                        let mut req = match method.as_str() {
-                            "GET" => minreq::get(&url),
-                            "POST" => minreq::post(&url),
-                            "PUT" => minreq::put(&url),
-                            "DELETE" => minreq::delete(&url),
-                            "PATCH" => minreq::patch(&url),
-                            "HEAD" => minreq::head(&url),
-                            _ => return Err(format!("Unsupported method: {}", method)),
-                        };
-
+                        let mut agent_builder = ureq::AgentBuilder::new();
                         if insecure {
-                            // Insecure not easily supported in minreq 2.x without custom proxy/handling
+                            let connector = native_tls::TlsConnector::builder()
+                                .danger_accept_invalid_certs(true)
+                                .danger_accept_invalid_hostnames(true)
+                                .build()
+                                .map_err(|e| e.to_string())?;
+                            agent_builder = agent_builder.tls_connector(Arc::new(connector));
                         }
+                        let agent = agent_builder.build();
+
+                        let mut request = agent.request(&method, &url);
 
                         for (k, v) in headers {
-                            req = req.with_header(k, v);
+                            request = request.set(&k, &v);
                         }
 
-                        if let Some(b) = body {
-                            req = req.with_body(b);
-                        }
+                        let response = if let Some(b) = body {
+                            request.send_string(&b)
+                        } else {
+                            request.call()
+                        };
 
-                        req.send().map_err(|e| e.to_string())
+                        response.map_err(|e| e.to_string())
                     })
                     .await
                     .map_err(|e| LuaError::RuntimeError(e.to_string()))?
                     .map_err(LuaError::RuntimeError)?;
 
-                    let status = res.status_code;
+                    let status = res.status();
                     let res_headers = lua_ref.create_table()?;
-                    for (name, value) in &res.headers {
-                        res_headers.set(name.as_str(), value.as_str())?;
+                    for name in res.headers_names() {
+                        if let Some(value) = res.header(&name) {
+                            res_headers.set(name, value)?;
+                        }
                     }
                     let res_body = res
-                        .as_str()
-                        .map_err(|e| LuaError::RuntimeError(e.to_string()))?
-                        .to_string();
+                        .into_string()
+                        .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
                     let res_table = lua_ref.create_table()?;
                     res_table.set("status", status)?;
