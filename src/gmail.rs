@@ -606,6 +606,7 @@ pub fn register(lua: &Lua, app_state: Arc<Mutex<AppState>>) -> LuaResult<()> {
             let res = lua.create_table()?;
             if row.is_some() {
                 res.set("status", "authorized")?;
+                res.set("email", email.clone())?;
                 res.set("mailbox", Mailbox { email, state: gmail_state })?;
             } else {
                 let mut auth_url = url::Url::parse("https://accounts.google.com/o/oauth2/v2/auth").unwrap();
@@ -614,7 +615,7 @@ pub fn register(lua: &Lua, app_state: Arc<Mutex<AppState>>) -> LuaResult<()> {
                     query.append_pair("client_id", &gmail_state.config.client_id);
                     query.append_pair("redirect_uri", &gmail_state.config.redirect_uri);
                     query.append_pair("response_type", "code");
-                    query.append_pair("scope", "https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/gmail.compose https://www.googleapis.com/auth/drive");
+                    query.append_pair("scope", "openid email https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/gmail.compose https://www.googleapis.com/auth/drive");
                     query.append_pair("access_type", "offline");
                     query.append_pair("prompt", "consent");
                     query.append_pair("state", &email);
@@ -634,8 +635,7 @@ pub fn register(lua: &Lua, app_state: Arc<Mutex<AppState>>) -> LuaResult<()> {
 pub async fn handle_callback(
     state: Arc<GmailState>,
     code: String,
-    email: String,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<String, Box<dyn std::error::Error>> {
     let client_id = state.config.client_id.clone();
     let client_secret = state.config.client_secret.clone();
     let redirect_uri = state.config.redirect_uri.clone();
@@ -659,13 +659,29 @@ pub async fn handle_callback(
         .expires_in
         .map(|s| chrono::Utc::now() + chrono::Duration::try_seconds(s).unwrap());
 
+    // Fetch the actual email from Google
+    let access_token_clone = access_token.clone();
+    let email_res = tokio::task::spawn_blocking(move || {
+        ureq::get("https://www.googleapis.com/oauth2/v3/userinfo")
+            .set("Authorization", &format!("Bearer {}", access_token_clone))
+            .call()
+    })
+    .await?;
+
+    let email_json: serde_json::Value = email_res?.into_json()?;
+    let email = email_json
+        .get("email")
+        .and_then(|v| v.as_str())
+        .ok_or("Failed to get email from Google")?
+        .to_string();
+
     let conn = state.db_conn.lock().unwrap();
     conn.execute(
         "INSERT OR REPLACE INTO google_tokens (email, access_token, refresh_token, expires_at) VALUES (?, ?, ?, ?)",
-        params![email, access_token, refresh_token, expires_at],
+        params![&email, access_token, refresh_token, expires_at],
     )?;
 
-    Ok(())
+    Ok(email)
 }
 
 pub async fn init_gmail_state() -> Result<Arc<GmailState>, Box<dyn std::error::Error>> {

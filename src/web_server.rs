@@ -292,8 +292,8 @@ async fn handle_google_callback(
 
     // If state_param looks like an email, it's the old GMail linking flow
     if state_param.contains('@') && !state_param.contains('/') {
-        match crate::gmail::handle_callback(gs, code, state_param).await {
-            Ok(_) => "Authentication successful! You can close this window.".into_response(),
+        match crate::gmail::handle_callback(gs, code).await {
+            Ok(email) => format!("Authentication successful as {}! You can close this window.", email).into_response(),
             Err(e) => format!("Authentication failed: {}", e).into_response(),
         }
     } else {

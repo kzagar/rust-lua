@@ -11,7 +11,7 @@ if login_res.status == "unauthorized" then
 end
 
 local mailbox = login_res.mailbox
-print("Authorized as " .. email)
+print("Authorized as " .. login_res.email)
 
 -- Search for messages in the last 24 hours
 local now_sec = now()
