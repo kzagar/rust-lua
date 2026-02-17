@@ -1,4 +1,5 @@
 mod cron;
+mod ibkr;
 mod sql;
 mod telegram;
 mod types;
@@ -19,6 +20,7 @@ use uuid::Uuid;
 
 fn register_modules(lua: &Lua, app_state: Arc<Mutex<AppState>>) -> LuaResult<()> {
     sql::register(lua)?;
+    ibkr::register(lua)?;
     web_client::register(lua)?;
     web_server::register(lua, app_state.clone())?;
     cron::register(lua, app_state.clone())?;
