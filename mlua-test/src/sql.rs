@@ -117,15 +117,14 @@ impl LuaUserData for Database {
                             _ => continue,
                         };
 
+                        #[allow(clippy::collapsible_if)]
                         if let LuaValue::Table(ref t) = v {
-                            if let Ok(marker) = t.get::<String>("__type") {
-                                if marker == "op" {
-                                    let op: String = t.get("op")?;
-                                    let val: LuaValue = t.get("val")?;
-                                    where_clauses.push(format!("{} {} ?", key, op));
-                                    params.push(val);
-                                    continue;
-                                }
+                            if t.get::<String>("__type").ok().as_deref() == Some("op") {
+                                let op: String = t.get("op")?;
+                                let val: LuaValue = t.get("val")?;
+                                where_clauses.push(format!("{} {} ?", key, op));
+                                params.push(val);
+                                continue;
                             }
                         }
 
@@ -310,15 +309,14 @@ impl LuaUserData for Database {
                             _ => continue,
                         };
 
+                        #[allow(clippy::collapsible_if)]
                         if let LuaValue::Table(ref t) = v {
-                            if let Ok(marker) = t.get::<String>("__type") {
-                                if marker == "op" {
-                                    let op: String = t.get("op")?;
-                                    let val: LuaValue = t.get("val")?;
-                                    where_clauses.push(format!("{} {} ?", key, op));
-                                    params.push(val);
-                                    continue;
-                                }
+                            if t.get::<String>("__type").ok().as_deref() == Some("op") {
+                                let op: String = t.get("op")?;
+                                let val: LuaValue = t.get("val")?;
+                                where_clauses.push(format!("{} {} ?", key, op));
+                                params.push(val);
+                                continue;
                             }
                         }
 
@@ -413,4 +411,3 @@ pub fn register(lua: &Lua) -> LuaResult<()> {
 
     Ok(())
 }
-
