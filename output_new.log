@@ -1,0 +1,108 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.10s
+     Running `target/debug/mlua-test examples/parallel.lua`
+GCP Logging disabled: credentials not found.
+Watching file: "/home/kzagar/rust-lua/examples/parallel.lua"
+Cleaning up attachment directory: "attachments"
+Warning: IBKR_CLIENT_ID environment variable is missing. IBKR support disabled.
+--- Running Lua script: examples/parallel.lua ---
+[Parallel] Starting 3 tasks using individual arguments...
+[Task] Starting fetch: https://httpbin.org/get?query=parallel-1
+[Task] Starting fetch: https://httpbin.org/get?query=parallel-2
+[Task] Starting fetch: https://httpbin.org/get?query=parallel-3
+[Task] Completed fetch: https://httpbin.org/get?query=parallel-1
+[Task] Completed fetch: https://httpbin.org/get?query=parallel-2
+[Task] Completed fetch: https://httpbin.org/get?query=parallel-3
+
+[Parallel] Starting tasks using a list (flattening)...
+[Task] Starting fetch: https://httpbin.org/get?query=list-1
+[Task] Starting fetch: https://httpbin.org/get?query=list-2
+[Task] Starting fetch: https://httpbin.org/get?query=solo
+[Task] Completed fetch: https://httpbin.org/get?query=list-1
+[Task] Completed fetch: https://httpbin.org/get?query=list-2
+[Task] Completed fetch: https://httpbin.org/get?query=solo
+
+[Sequential] Executing tasks one by one...
+[Task] Starting fetch: https://httpbin.org/get?query=seq-1
+[Task] Completed fetch: https://httpbin.org/get?query=seq-1
+[Task] Starting fetch: https://httpbin.org/get?query=seq-2
+[Task] Completed fetch: https://httpbin.org/get?query=seq-2
+
+[Parallel] Mixed delays (parallel test)...
+[Task] Starting fetch: https://httpbin.org/delay/1
+[Task] Starting fetch: https://httpbin.org/delay/2
+[Task] Completed fetch: https://httpbin.org/delay/1
+[Task] Completed fetch: https://httpbin.org/delay/2
+[Status] All demonstrations completed.
+
+============================================================
+URL                                      | Result
+------------------------------------------------------------
+https://httpbin.org/get?query=parallel-3 | Status: 200, Body length: 335
+https://httpbin.org/get?query=list-1     | Status: 200, Body length: 327
+https://httpbin.org/get?query=parallel-2 | Status: 200, Body length: 335
+https://httpbin.org/get?query=solo       | Status: 200, Body length: 323
+https://httpbin.org/get?query=parallel-1 | Status: 200, Body length: 335
+https://httpbin.org/get?query=list-2     | Status: 200, Body length: 327
+https://httpbin.org/delay/2              | Status: 200, Body length: 339
+https://httpbin.org/delay/1              | Status: 200, Body length: 339
+https://httpbin.org/get?query=seq-2      | Status: 200, Body length: 325
+https://httpbin.org/get?query=seq-1      | Status: 200, Body length: 325
+============================================================
+--- Lua script finished ---
+Starting server...
+Using default configuration: HTTPS 0.0.0.0:3443
+REST server listening (TLS) on https://0.0.0.0:3443
+Web Server running. Waiting for changes...
+REST server error: Address already in use (os error 98)
+SIGHUP received, reloading...
+Reload signal received.
+--- Running Lua script: examples/parallel.lua ---
+[Parallel] Starting 3 tasks using individual arguments...
+[Task] Starting fetch: https://httpbin.org/get?query=parallel-1
+[Task] Starting fetch: https://httpbin.org/get?query=parallel-2
+[Task] Starting fetch: https://httpbin.org/get?query=parallel-3
+[Task] Completed fetch: https://httpbin.org/get?query=parallel-2
+[Task] Completed fetch: https://httpbin.org/get?query=parallel-1
+[Task] Completed fetch: https://httpbin.org/get?query=parallel-3
+
+[Parallel] Starting tasks using a list (flattening)...
+[Task] Starting fetch: https://httpbin.org/get?query=list-1
+[Task] Starting fetch: https://httpbin.org/get?query=list-2
+[Task] Starting fetch: https://httpbin.org/get?query=solo
+[Task] Completed fetch: https://httpbin.org/get?query=solo
+[Task] Completed fetch: https://httpbin.org/get?query=list-2
+[Task] Completed fetch: https://httpbin.org/get?query=list-1
+
+[Sequential] Executing tasks one by one...
+[Task] Starting fetch: https://httpbin.org/get?query=seq-1
+[Task] Completed fetch: https://httpbin.org/get?query=seq-1
+[Task] Starting fetch: https://httpbin.org/get?query=seq-2
+[Task] Completed fetch: https://httpbin.org/get?query=seq-2
+
+[Parallel] Mixed delays (parallel test)...
+[Task] Starting fetch: https://httpbin.org/delay/1
+[Task] Starting fetch: https://httpbin.org/delay/2
+[Task] Completed fetch: https://httpbin.org/delay/1
+[Task] Completed fetch: https://httpbin.org/delay/2
+[Status] All demonstrations completed.
+
+============================================================
+URL                                      | Result
+------------------------------------------------------------
+https://httpbin.org/get?query=parallel-3 | Status: 200, Body length: 335
+https://httpbin.org/get?query=list-1     | Status: 200, Body length: 327
+https://httpbin.org/get?query=parallel-2 | Status: 200, Body length: 335
+https://httpbin.org/get?query=solo       | Status: 200, Body length: 323
+https://httpbin.org/get?query=parallel-1 | Status: 200, Body length: 335
+https://httpbin.org/get?query=list-2     | Status: 200, Body length: 327
+https://httpbin.org/delay/2              | Status: 200, Body length: 339
+https://httpbin.org/delay/1              | Status: 200, Body length: 339
+https://httpbin.org/get?query=seq-2      | Status: 200, Body length: 325
+https://httpbin.org/get?query=seq-1      | Status: 200, Body length: 325
+============================================================
+--- Lua script finished ---
+Starting server...
+Using default configuration: HTTPS 0.0.0.0:3443
+REST server listening (TLS) on https://0.0.0.0:3443
+Web Server running. Waiting for changes...
+REST server error: Address already in use (os error 98)

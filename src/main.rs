@@ -69,7 +69,7 @@ async fn main() -> LuaResult<()> {
     let path_str = if args.len() > 1 {
         &args[1]
     } else {
-        "example.lua"
+        "examples/example.lua"
     };
     let path = Path::new(path_str);
     let abs_path = fs::canonicalize(path).map_err(|e| {

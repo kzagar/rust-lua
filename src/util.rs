@@ -81,5 +81,57 @@ pub fn register(lua: &Lua) -> LuaResult<()> {
     )?;
     lua.globals().set("url", url)?;
 
+    // Helper to extract and flatten tasks from MultiValue (handles both functions and tables of functions)
+    let extract_tasks = |tasks: LuaMultiValue| -> LuaResult<Vec<LuaFunction>> {
+        let mut extracted = Vec::new();
+        for task in tasks {
+            match task {
+                LuaValue::Function(f) => extracted.push(f),
+                LuaValue::Table(t) => {
+                    // Try to iterate as a sequence (ipairs style) first, 
+                    // or just all values if it's not a strict sequence.
+                    for value in t.sequence_values::<LuaFunction>() {
+                        extracted.push(value?);
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(extracted)
+    };
+
+    lua.globals().set(
+        "parallel",
+        lua.create_async_function({
+            let extract_tasks = extract_tasks.clone();
+            move |_, tasks: LuaMultiValue| {
+                let extract_tasks = extract_tasks.clone();
+                async move {
+                    let tasks = extract_tasks(tasks)?;
+                    let mut futures = Vec::new();
+                    for f in tasks {
+                        futures.push(f.call_async::<()>(()));
+                    }
+                    futures::future::join_all(futures).await;
+                    Ok(())
+                }
+            }
+        })?,
+    )?;
+
+    lua.globals().set(
+        "sequential",
+        lua.create_async_function(move |_, tasks: LuaMultiValue| {
+            let extract_tasks = extract_tasks.clone();
+            async move {
+                let tasks = extract_tasks(tasks)?;
+                for f in tasks {
+                    f.call_async::<()>(()).await?;
+                }
+                Ok(())
+            }
+        })?,
+    )?;
+
     Ok(())
 }

@@ -38,7 +38,7 @@ fi
 cp "$BINARY_PATH" "$STAGING_DIR/usr/bin/"
 
 # Copy Lua scripts and assets to /etc/mlua-test
-cp example-rest-server.lua "$STAGING_DIR/etc/mlua-test/"
+cp examples/example-rest-server.lua "$STAGING_DIR/etc/mlua-test/"
 cp cert.pem key.pem "$STAGING_DIR/etc/mlua-test/"
 
 # Copy public directory

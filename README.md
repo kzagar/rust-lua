@@ -53,6 +53,23 @@ To install the binary on your target device (e.g., OpenWrt):
 Since Lua 5.5 is vendored and linked statically, no external Lua library is
 required on the target.
 
+## Examples
+
+Example Lua scripts are located in the `examples/` directory:
+
+- `examples/example.lua`: Basic script demonstrating core functionality.
+- `examples/rest-server.lua`: A REST server with multiple endpoints.
+- `examples/rest-client.lua`: Using the HTTP client to fetch data.
+- `examples/gmail.lua`: Gmail and Google Drive integration.
+- `examples/proxy.lua`: Reverse proxy with authentication.
+- `examples/telegram.lua`: Telegram bot integration.
+
+To run an example:
+
+```bash
+cargo run -- examples/example.lua
+```
+
 ## Gmail Support
 
 To enable Gmail support, you need to set up Google Cloud Platform (GCP)
@@ -81,6 +98,7 @@ credentials:
     - Create a file named `.secrets` in the project root (formatted as a `.env`
       file).
     - Add the following variables:
+
       ```dotenv
       GOOGLE_CLIENT_SECRET=/path/to/your/client_secret.json
       GMAIL_ATTACHMENT_DIR=attachments  # Optional
@@ -93,6 +111,25 @@ credentials:
       openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -sha256 -days 3650 -nodes -subj "/C=XX/ST=State/L=City/O=Org/OU=Unit/CN=localhost"
       ```
 
+## Logging
+
+Logging can be tuned using the `RUST_LOG` environment variable. By default, the
+log level is set to `info`.
+
+- **Set Log Level**:
+
+  ```bash
+  export RUST_LOG=debug
+  cargo run -- examples/example.lua
+  ```
+
+- **Available Levels**: `error`, `warn`, `info`, `debug`, `trace`.
+
+- **Module Specific Logging**:
+  ```bash
+  export RUST_LOG=mlua_test=debug,ureq=warn
+  ```
+
 ## Optimization Features
 
 - **Size Optimization**:
@@ -103,10 +140,18 @@ credentials:
 
 ## Run Concurrency Test
 
-To run the concurrency test using `uv`:
+To run the concurrency test:
+
+1. **Start the server**:
+
+   ```bash
+   cargo run -- tests/concurrency-server.lua
+   ```
+
+2. **Run the test script** using `uv`:
 
 ```bash
-uv run python3 concurrency_test.py
+uv run tests/concurrency.py
 ```
 
 This will automatically manage Python dependencies (`httpx`, `numpy`,

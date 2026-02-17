@@ -11,9 +11,15 @@ impl SimpleLogger {
         if gcp_client.is_none() {
             println!("GCP Logging disabled: credentials not found.");
         }
+
+        let level_filter = std::env::var("RUST_LOG")
+            .ok()
+            .and_then(|s| s.parse::<log::LevelFilter>().ok())
+            .unwrap_or(log::LevelFilter::Info);
+
         let logger = SimpleLogger { gcp_client };
         log::set_boxed_logger(Box::new(logger))
-            .map(|()| log::set_max_level(log::LevelFilter::Trace))
+            .map(|()| log::set_max_level(level_filter))
             .expect("Failed to initialize logger");
     }
 }
