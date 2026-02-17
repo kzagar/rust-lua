@@ -116,7 +116,38 @@ pub async fn start(
             state.config.clone()
         };
 
-        let mut router = Router::new();
+        let mut router = Router::new().route(
+            "/auth/google/callback",
+            get(
+                |axum::extract::State(app_state): axum::extract::State<Arc<Mutex<AppState>>>,
+                 AxQuery(params): AxQuery<HashMap<String, String>>| async move {
+                    let code = match params.get("code") {
+                        Some(c) => c.clone(),
+                        None => return "Missing code".into_response(),
+                    };
+                    let email = match params.get("state") {
+                        Some(s) => s.clone(),
+                        None => return "Missing state (email)".into_response(),
+                    };
+
+                    let gmail_state = {
+                        let state = app_state.lock().unwrap();
+                        state.gmail_state.clone()
+                    };
+
+                    if let Some(gs) = gmail_state {
+                        match crate::gmail::handle_callback(gs, code, email).await {
+                            Ok(_) => "Authentication successful! You can close this window."
+                                .into_response(),
+                            Err(e) => format!("Authentication failed: {}", e).into_response(),
+                        }
+                    } else {
+                        "Gmail not initialized".into_response()
+                    }
+                },
+            )
+            .with_state(app_state.clone()),
+        );
 
         // Setup routes
         {

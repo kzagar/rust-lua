@@ -12,6 +12,7 @@ pub struct RestRequest {
 pub enum EngineRequest {
     Rest(RestRequest),
     Cron(usize),
+    TelegramUpdate(JsonValue),
 }
 
 pub struct RestRouteInfo {
@@ -37,5 +38,7 @@ pub struct AppState {
     pub routes: Vec<RestRouteInfo>,
     pub static_routes: Vec<(String, String)>,
     pub cron_jobs: Vec<CronJobInfo>,
+    pub telegram_handler: Option<RegistryKey>,
     pub config: Option<ServerConfig>,
+    pub gmail_state: Option<std::sync::Arc<crate::gmail::GmailState>>,
 }
