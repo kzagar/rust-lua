@@ -1,0 +1,4 @@
+httpx
+numpy
+matplotlib
+tabulate

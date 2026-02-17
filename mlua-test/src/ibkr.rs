@@ -2,7 +2,6 @@ use chrono::Utc;
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use mlua::prelude::*;
 use mlua::serde::LuaSerdeExt;
-use reqwest::{Client, Method, Response};
 use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey, LineEnding};
 use rsa::RsaPrivateKey;
 use serde::{Deserialize, Serialize};
@@ -34,7 +33,6 @@ struct IbkrState {
     token_expiry: Option<Instant>,
     conid_cache: HashMap<String, i64>,
     account_id: Option<String>,
-    client: Client,
 }
 
 impl IbkrState {
@@ -67,31 +65,24 @@ impl IbkrState {
         let assertion = encode(&header, &claims, &encoding_key)
             .map_err(|e| LuaError::RuntimeError(format!("Failed to sign JWT: {}", e)))?;
 
-        let params = [
-            ("grant_type", "client_credentials"),
-            (
-                "client_assertion_type",
-                "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
-            ),
-            ("client_assertion", assertion.as_str()),
-        ];
+        let body = format!(
+            "grant_type=client_credentials&client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer&client_assertion={}",
+            assertion
+        );
 
-        let resp: Response = self
-            .client
-            .post(TOKEN_ENDPOINT)
-            .form(&params)
-            .send()
-            .await
-            .map_err(|e| LuaError::RuntimeError(format!("Token request failed: {}", e)))?;
+        let resp = tokio::task::spawn_blocking(move || {
+            minreq::post(TOKEN_ENDPOINT)
+                .with_header("Content-Type", "application/x-www-form-urlencoded")
+                .with_body(body)
+                .send()
+        }).await.map_err(|e| LuaError::RuntimeError(e.to_string()))?
+        .map_err(|e| LuaError::RuntimeError(format!("Token request failed: {}", e)))?;
 
-        if !resp.status().is_success() {
-            let err_text = resp
-                .text()
-                .await
-                .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+        if resp.status_code < 200 || resp.status_code >= 300 {
+            let err_text = resp.as_str().unwrap_or_default();
             return Err(LuaError::RuntimeError(format!(
-                "Token request returned error: {}",
-                err_text
+                "Token request returned error ({}): {}",
+                resp.status_code, err_text
             )));
         }
 
@@ -101,9 +92,9 @@ impl IbkrState {
             expires_in: u64,
         }
 
-        let token_resp: TokenResponse = resp.json().await.map_err(|e| {
-            LuaError::RuntimeError(format!("Failed to parse token response: {}", e))
-        })?;
+        let token_resp: TokenResponse = serde_json::from_str(
+            resp.as_str().map_err(|e| LuaError::RuntimeError(e.to_string()))?
+        ).map_err(|e| LuaError::RuntimeError(format!("Failed to parse token response: {}", e)))?;
 
         self.access_token = Some(token_resp.access_token.clone());
         self.token_expiry = Some(Instant::now() + Duration::from_secs(token_resp.expires_in));
@@ -113,39 +104,45 @@ impl IbkrState {
 
     async fn api_request(
         &mut self,
-        method: Method,
-        endpoint: &str,
+        method: String,
+        endpoint: String,
         body: Option<serde_json::Value>,
     ) -> LuaResult<serde_json::Value> {
         let token = self.get_token().await?;
         let url = format!("{}{}", BASE_URL, endpoint);
 
-        let mut rb = self.client.request(method, &url).bearer_auth(token);
+        let resp = tokio::task::spawn_blocking(move || {
+            let mut req = match method.as_str() {
+                "GET" => minreq::get(&url),
+                "POST" => minreq::post(&url),
+                "PUT" => minreq::put(&url),
+                "DELETE" => minreq::delete(&url),
+                _ => return Err(format!("Unsupported method: {}", method)),
+            };
 
-        if let Some(b) = body {
-            rb = rb.json(&b);
-        }
+            req = req.with_header("Authorization", format!("Bearer {}", token));
 
-        let resp: Response = rb
-            .send()
-            .await
-            .map_err(|e| LuaError::RuntimeError(format!("API request failed: {}", e)))?;
+            if let Some(b) = body {
+                req = req.with_header("Content-Type", "application/json");
+                req = req.with_body(serde_json::to_string(&b).unwrap_or_default());
+            }
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let err_text = resp
-                .text()
-                .await
-                .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+            req.send().map_err(|e| e.to_string())
+        }).await.map_err(|e| LuaError::RuntimeError(e.to_string()))?
+        .map_err(LuaError::RuntimeError)?;
+
+        if resp.status_code < 200 || resp.status_code >= 300 {
+            let status = resp.status_code;
+            let err_text = resp.as_str().unwrap_or_default();
             return Err(LuaError::RuntimeError(format!(
                 "API error ({}): {}",
                 status, err_text
             )));
         }
 
-        resp.json::<serde_json::Value>()
-            .await
-            .map_err(|e| LuaError::RuntimeError(format!("Failed to parse API response: {}", e)))
+        serde_json::from_str(
+            resp.as_str().map_err(|e| LuaError::RuntimeError(e.to_string()))?
+        ).map_err(|e| LuaError::RuntimeError(format!("Failed to parse API response: {}", e)))
     }
 
     async fn ensure_account_id(&mut self) -> LuaResult<String> {
@@ -154,7 +151,7 @@ impl IbkrState {
         }
 
         let accounts_val = self
-            .api_request(Method::GET, "/portfolio/accounts", None)
+            .api_request("GET".to_string(), "/portfolio/accounts".to_string(), None)
             .await?;
         let accounts = accounts_val
             .as_array()
@@ -183,7 +180,7 @@ impl IbkrState {
             "/iserver/secdef/search?symbol={}&name=true&secType=STK",
             symbol
         );
-        let results: serde_json::Value = self.api_request(Method::GET, &endpoint, None).await?;
+        let results: serde_json::Value = self.api_request("GET".to_string(), endpoint, None).await?;
 
         let conid = results
             .as_array()
@@ -201,8 +198,8 @@ pub fn register(lua: &Lua) -> LuaResult<()> {
     let client_id = match env::var("IBKR_CLIENT_ID") {
         Ok(val) => val,
         Err(_) => {
-            eprintln!("Error: IBKR_CLIENT_ID environment variable is missing.");
-            std::process::exit(1);
+            println!("Warning: IBKR_CLIENT_ID environment variable is missing. IBKR support disabled.");
+            return Ok(());
         }
     };
 
@@ -281,10 +278,6 @@ pub fn register(lua: &Lua) -> LuaResult<()> {
         token_expiry: None,
         conid_cache: HashMap::new(),
         account_id: None,
-        client: Client::builder()
-            .timeout(Duration::from_secs(10))
-            .build()
-            .unwrap(),
     }));
 
     let ibkr = lua.create_table()?;
@@ -298,7 +291,7 @@ pub fn register(lua: &Lua) -> LuaResult<()> {
                 let mut s = state.lock().await;
                 let conid = s.get_conid(&symbol).await?;
                 let endpoint = format!("/iserver/marketdata/snapshot?conids={}&fields=31", conid);
-                let resp: serde_json::Value = s.api_request(Method::GET, &endpoint, None).await?;
+                let resp: serde_json::Value = s.api_request("GET".to_string(), endpoint, None).await?;
 
                 let last_price = resp
                     .as_array()
@@ -348,7 +341,7 @@ pub fn register(lua: &Lua) -> LuaResult<()> {
 
             let endpoint = format!("/iserver/account/{}/orders", account_id);
             let body = serde_json::json!([order]);
-            let resp: serde_json::Value = s.api_request(Method::POST, &endpoint, Some(body)).await?;
+            let resp: serde_json::Value = s.api_request("POST".to_string(), endpoint, Some(body)).await?;
 
             lua.to_value(&resp)
         }
@@ -422,7 +415,7 @@ pub fn register(lua: &Lua) -> LuaResult<()> {
                 let account_id = s.ensure_account_id().await?;
                 let endpoint = format!("/iserver/account/{}/order/{}", account_id, order_id);
                 let resp: serde_json::Value =
-                    s.api_request(Method::DELETE, &endpoint, None).await?;
+                    s.api_request("DELETE".to_string(), endpoint, None).await?;
                 lua.to_value(&resp)
             }
         })?,
@@ -436,7 +429,7 @@ pub fn register(lua: &Lua) -> LuaResult<()> {
             async move {
                 let mut s = state.lock().await;
                 let resp: serde_json::Value =
-                    s.api_request(Method::GET, "/iserver/account/orders", None).await?;
+                    s.api_request("GET".to_string(), "/iserver/account/orders".to_string(), None).await?;
                 lua.to_value(&resp)
             }
         })?,
@@ -451,7 +444,7 @@ pub fn register(lua: &Lua) -> LuaResult<()> {
                 let mut s = state.lock().await;
                 let account_id = s.ensure_account_id().await?;
                 let endpoint = format!("/portfolio/{}/positions", account_id);
-                let resp: serde_json::Value = s.api_request(Method::GET, &endpoint, None).await?;
+                let resp: serde_json::Value = s.api_request("GET".to_string(), endpoint, None).await?;
 
                 let positions = lua.create_table()?;
                 if let Some(arr) = resp.as_array() {

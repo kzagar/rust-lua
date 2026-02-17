@@ -60,3 +60,14 @@ required on the target.
   - `lto = true` (Link Time Optimization)
   - `panic = "abort"` (removes stack unwinding)
   - `strip = true` (removes symbols)
+
+## Run Concurrency Test
+
+To run the concurrency test using `uv`:
+
+```bash
+uv run python3 concurrency_test.py
+```
+
+This will automatically manage Python dependencies (`httpx`, `numpy`,
+`matplotlib`, `tabulate`) using the configuration in `pyproject.toml`.
