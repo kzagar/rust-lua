@@ -3,11 +3,12 @@ use base64::Engine;
 use mlua::prelude::*;
 use reqwest::Client;
 use serde::Deserialize;
-use sqlx::{Row, SqlitePool};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use chrono::{DateTime, Utc};
 
 pub struct GmailConfig {
     pub client_id: String,
@@ -17,8 +18,9 @@ pub struct GmailConfig {
 
 pub struct GmailState {
     pub config: GmailConfig,
-    pub db_pool: SqlitePool,
+    pub db_conn: Arc<Mutex<Connection>>,
     pub attachment_manager: Arc<AttachmentManager>,
+    pub client: Client,
 }
 
 pub struct AttachmentManager {
@@ -62,7 +64,7 @@ pub struct Mailbox {
 
 impl LuaUserData for Mailbox {
     fn add_methods<M: LuaUserDataMethods<Self>>(methods: &mut M) {
-        methods.add_async_method("search", |lua, mailbox, options: LuaTable| async move {
+        methods.add_async_method("search", |lua: Lua, mailbox, options: LuaTable| async move {
             let mut query = String::new();
             if let Some(after) = options.get::<Option<i64>>("after")? {
                 query.push_str(&format!("after:{} ", after));
@@ -72,8 +74,7 @@ impl LuaUserData for Mailbox {
             }
 
             let token = get_valid_token(mailbox.state.clone(), &mailbox.email).await?;
-            let client = Client::new();
-            let res = client
+            let res = mailbox.state.client
                 .get("https://gmail.googleapis.com/gmail/v1/users/me/messages")
                 .query(&[("q", query.trim())])
                 .bearer_auth(token)
@@ -101,12 +102,11 @@ impl LuaUserData for Mailbox {
 
         methods.add_async_method("get_message", |_, mailbox, id: String| async move {
             let token = get_valid_token(mailbox.state.clone(), &mailbox.email).await?;
-            let client = Client::new();
             let url = format!(
                 "https://gmail.googleapis.com/gmail/v1/users/me/messages/{}",
                 id
             );
-            let res = client
+            let res = mailbox.state.client
                 .get(&url)
                 .bearer_auth(token)
                 .send()
@@ -156,8 +156,7 @@ impl LuaUserData for Mailbox {
                 let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(mime);
 
                 let token = get_valid_token(mailbox.state.clone(), &mailbox.email).await?;
-                let client = Client::new();
-                let res = client
+                let res = mailbox.state.client
                     .post("https://gmail.googleapis.com/gmail/v1/users/me/drafts")
                     .bearer_auth(token)
                     .json(&serde_json::json!({
@@ -182,8 +181,7 @@ impl LuaUserData for Mailbox {
 
         methods.add_async_method("send_draft", |_, mailbox, draft_id: String| async move {
             let token = get_valid_token(mailbox.state.clone(), &mailbox.email).await?;
-            let client = Client::new();
-            let res = client
+            let res = mailbox.state.client
                 .post("https://gmail.googleapis.com/gmail/v1/users/me/drafts/send")
                 .bearer_auth(token)
                 .json(&serde_json::json!({
@@ -224,8 +222,7 @@ impl LuaUserData for Mailbox {
                 let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(mime);
 
                 let token = get_valid_token(mailbox.state.clone(), &mailbox.email).await?;
-                let client = Client::new();
-                let res = client
+                let res = mailbox.state.client
                     .post("https://gmail.googleapis.com/gmail/v1/users/me/messages/send")
                     .bearer_auth(token)
                     .json(&serde_json::json!({
@@ -314,7 +311,7 @@ pub struct Message {
 
 impl LuaUserData for Message {
     fn add_methods<M: LuaUserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("get_info", |lua, this, ()| {
+        methods.add_method("get_info", |lua: &Lua, this, ()| {
             let info = lua.create_table()?;
             info.set("id", this.id.clone())?;
             info.set(
@@ -358,9 +355,8 @@ impl LuaUserData for Message {
             Ok(info)
         });
 
-        methods.add_async_method("download_attachments", |lua, this, ()| async move {
+        methods.add_async_method("download_attachments", |lua: Lua, this, ()| async move {
             let token = get_valid_token(this.mailbox.state.clone(), &this.mailbox.email).await?;
-            let client = Client::new();
             let mut paths: Vec<PathBuf> = Vec::new();
 
             let mut attachments_info = Vec::new();
@@ -378,7 +374,7 @@ impl LuaUserData for Message {
                         "https://gmail.googleapis.com/gmail/v1/users/me/messages/{}/attachments/{}",
                         this.id, attachment_id
                     );
-                    let res = client
+                    let res = this.mailbox.state.client
                         .get(&url)
                         .bearer_auth(&token)
                         .send()
@@ -497,31 +493,29 @@ struct TokenResponse {
     access_token: String,
     refresh_token: Option<String>,
     expires_in: Option<i64>,
+    scope: Option<String>,
 }
 
-async fn get_valid_token(state: Arc<GmailState>, email: &str) -> LuaResult<String> {
-    let row = sqlx::query(
-        "SELECT access_token, refresh_token, expires_at FROM google_tokens WHERE email = ?",
-    )
-    .bind(email)
-    .fetch_optional(&state.db_pool)
-    .await
-    .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+pub async fn get_valid_token(state: Arc<GmailState>, email: &str) -> LuaResult<String> {
+    let (access_token, refresh_token, expires_at_str): (String, Option<String>, Option<String>) = {
+        let db = state.db_conn.lock().unwrap();
+        db.query_row(
+            "SELECT access_token, refresh_token, expires_at FROM google_tokens WHERE email = ?",
+            params![email],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        ).optional().map_err(|e| LuaError::RuntimeError(e.to_string()))?
+        .ok_or_else(|| LuaError::RuntimeError(format!("No token for {}", email)))?
+    };
 
-    let row = row.ok_or_else(|| LuaError::RuntimeError(format!("No token for {}", email)))?;
-
-    let access_token: String = row.get(0);
-    let refresh_token: Option<String> = row.get(1);
-    let expires_at: Option<chrono::DateTime<chrono::Utc>> = row.get(2);
+    let expires_at = expires_at_str.and_then(|s| DateTime::parse_from_rfc3339(&s).ok().map(|dt| dt.with_timezone(&Utc)));
 
     let is_expired = expires_at
-        .map(|exp| exp < chrono::Utc::now() + chrono::Duration::try_seconds(60).unwrap())
+        .map(|exp| exp < Utc::now() + chrono::Duration::try_seconds(60).unwrap())
         .unwrap_or(false);
 
     if is_expired {
         if let Some(rf_token) = refresh_token {
-            let client = Client::new();
-            let res = client
+            let res = state.client
                 .post("https://oauth2.googleapis.com/token")
                 .form(&[
                     ("client_id", &state.config.client_id),
@@ -541,16 +535,23 @@ async fn get_valid_token(state: Arc<GmailState>, email: &str) -> LuaResult<Strin
             let new_refresh_token = token_res.refresh_token;
             let new_expires_at = token_res
                 .expires_in
-                .map(|s| chrono::Utc::now() + chrono::Duration::try_seconds(s).unwrap());
+                .map(|s| Utc::now() + chrono::Duration::try_seconds(s).unwrap());
+            let new_scopes = token_res.scope;
 
-            sqlx::query("UPDATE google_tokens SET access_token = ?, refresh_token = COALESCE(?, refresh_token), expires_at = ? WHERE email = ?")
-                .bind(&new_access_token)
-                .bind(&new_refresh_token)
-                .bind(new_expires_at)
-                .bind(email)
-                .execute(&state.db_pool)
-                .await
-                .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+            {
+                let db = state.db_conn.lock().unwrap();
+                if let Some(scopes) = new_scopes {
+                    db.execute(
+                        "UPDATE google_tokens SET access_token = ?, refresh_token = COALESCE(?, refresh_token), expires_at = ?, scopes = ? WHERE email = ?",
+                        params![new_access_token, new_refresh_token, new_expires_at.map(|dt| dt.to_rfc3339()), scopes, email],
+                    ).map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+                } else {
+                    db.execute(
+                        "UPDATE google_tokens SET access_token = ?, refresh_token = COALESCE(?, refresh_token), expires_at = ? WHERE email = ?",
+                        params![new_access_token, new_refresh_token, new_expires_at.map(|dt| dt.to_rfc3339()), email],
+                    ).map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+                }
+            }
 
             return Ok(new_access_token);
         } else {
@@ -580,14 +581,22 @@ pub fn register(lua: &Lua, app_state: Arc<Mutex<AppState>>) -> LuaResult<()> {
                 None => return Err(LuaError::RuntimeError("Gmail not initialized".into())),
             };
 
-            let row = sqlx::query("SELECT 1 FROM google_tokens WHERE email = ?")
-                .bind(&email)
-                .fetch_optional(&gmail_state.db_pool)
-                .await
-                .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+            let scopes: Option<String> = {
+                let db = gmail_state.db_conn.lock().unwrap();
+                db.query_row("SELECT scopes FROM google_tokens WHERE email = ?", params![email], |row| row.get(0))
+                    .optional()
+                    .map_err(|e| LuaError::RuntimeError(e.to_string()))?
+            };
+
+            let mut authorized = false;
+            if let Some(s) = scopes {
+                if s.contains("https://www.googleapis.com/auth/drive") {
+                    authorized = true;
+                }
+            }
 
             let res = lua.create_table()?;
-            if row.is_some() {
+            if authorized {
                 res.set("status", "authorized")?;
                 res.set("mailbox", Mailbox { email, state: gmail_state })?;
             } else {
@@ -597,7 +606,7 @@ pub fn register(lua: &Lua, app_state: Arc<Mutex<AppState>>) -> LuaResult<()> {
                     query.append_pair("client_id", &gmail_state.config.client_id);
                     query.append_pair("redirect_uri", &gmail_state.config.redirect_uri);
                     query.append_pair("response_type", "code");
-                    query.append_pair("scope", "https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/gmail.compose");
+                    query.append_pair("scope", "https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/gmail.compose https://www.googleapis.com/auth/drive");
                     query.append_pair("access_type", "offline");
                     query.append_pair("prompt", "consent");
                     query.append_pair("state", &email);
@@ -619,8 +628,7 @@ pub async fn handle_callback(
     code: String,
     email: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let client = Client::new();
-    let res = client
+    let res = state.client
         .post("https://oauth2.googleapis.com/token")
         .form(&[
             ("client_id", &state.config.client_id),
@@ -638,15 +646,16 @@ pub async fn handle_callback(
     let refresh_token = token_res.refresh_token;
     let expires_at = token_res
         .expires_in
-        .map(|s| chrono::Utc::now() + chrono::Duration::try_seconds(s).unwrap());
+        .map(|s| Utc::now() + chrono::Duration::try_seconds(s).unwrap());
+    let scopes = token_res.scope.unwrap_or_default();
 
-    sqlx::query("INSERT OR REPLACE INTO google_tokens (email, access_token, refresh_token, expires_at) VALUES (?, ?, ?, ?)")
-        .bind(email)
-        .bind(access_token)
-        .bind(refresh_token)
-        .bind(expires_at)
-        .execute(&state.db_pool)
-        .await?;
+    {
+        let db = state.db_conn.lock().unwrap();
+        db.execute(
+            "INSERT OR REPLACE INTO google_tokens (email, access_token, refresh_token, expires_at, scopes) VALUES (?, ?, ?, ?, ?)",
+            params![email, access_token, refresh_token, expires_at.map(|dt| dt.to_rfc3339()), scopes],
+        )?;
+    }
 
     Ok(())
 }
@@ -689,10 +698,14 @@ pub async fn init_gmail_state() -> Result<Arc<GmailState>, Box<dyn std::error::E
         redirect_uri: redirect_uri.to_string(),
     };
 
-    let db_pool = SqlitePool::connect("sqlite:tokens.db?mode=rwc").await?;
-    sqlx::query("CREATE TABLE IF NOT EXISTS google_tokens (email TEXT PRIMARY KEY, access_token TEXT, refresh_token TEXT, expires_at DATETIME)")
-        .execute(&db_pool)
-        .await?;
+    let db_conn = Connection::open("tokens.db")?;
+    db_conn.execute(
+        "CREATE TABLE IF NOT EXISTS google_tokens (email TEXT PRIMARY KEY, access_token TEXT, refresh_token TEXT, expires_at DATETIME)",
+        [],
+    )?;
+
+    // Add scopes column if it doesn't exist
+    let _ = db_conn.execute("ALTER TABLE google_tokens ADD COLUMN scopes TEXT", []);
 
     let attachment_dir = attachment_dir_str
         .map(|s| s.to_string())
@@ -706,7 +719,8 @@ pub async fn init_gmail_state() -> Result<Arc<GmailState>, Box<dyn std::error::E
 
     Ok(Arc::new(GmailState {
         config,
-        db_pool,
+        db_conn: Arc::new(Mutex::new(db_conn)),
         attachment_manager: Arc::new(AttachmentManager::new(attachment_dir)),
+        client: Client::new(),
     }))
 }
