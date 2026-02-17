@@ -65,7 +65,6 @@ pub fn load_secrets() {
     }
 }
 
-
 pub fn register(lua: &Lua) -> LuaResult<()> {
     let logging = lua.create_table()?;
     logging.set(
@@ -143,6 +142,54 @@ pub fn register(lua: &Lua) -> LuaResult<()> {
     )?;
     lua.globals().set("url", url)?;
 
+    let util = lua.create_table()?;
+    util.set(
+        "execute",
+        lua.create_async_function(
+            |lua, (cmd_parts, options): (Vec<String>, Option<LuaTable>)| async move {
+                if cmd_parts.is_empty() {
+                    return Err(LuaError::RuntimeError("Command cannot be empty".into()));
+                }
+
+                let mut command = tokio::process::Command::new(&cmd_parts[0]);
+                command
+                    .args(&cmd_parts[1..])
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped());
+
+                if let Some(opts) = options {
+                    if let Some(cwd) = opts.get::<Option<String>>("cwd")? {
+                        command.current_dir(cwd);
+                    }
+                    if let Some(env) = opts.get::<Option<LuaTable>>("env")? {
+                        for pair in env.pairs::<String, String>() {
+                            let (k, v) = pair?;
+                            command.env(k, v);
+                        }
+                    }
+                }
+
+                let child = command
+                    .spawn()
+                    .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+
+                let output = child
+                    .wait_with_output()
+                    .await
+                    .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+
+                let res_table = lua.create_table()?;
+                res_table.set("success", output.status.success())?;
+                res_table.set("code", output.status.code())?;
+                res_table.set("stdout", lua.create_string(&output.stdout)?)?;
+                res_table.set("stderr", lua.create_string(&output.stderr)?)?;
+
+                Ok(res_table)
+            },
+        )?,
+    )?;
+    lua.globals().set("util", util)?;
+
     // Helper to extract and flatten tasks from MultiValue (handles both functions and tables of functions)
     let extract_tasks = |tasks: LuaMultiValue| -> LuaResult<Vec<LuaFunction>> {
         let mut extracted = Vec::new();
@@ -150,7 +197,7 @@ pub fn register(lua: &Lua) -> LuaResult<()> {
             match task {
                 LuaValue::Function(f) => extracted.push(f),
                 LuaValue::Table(t) => {
-                    // Try to iterate as a sequence (ipairs style) first, 
+                    // Try to iterate as a sequence (ipairs style) first,
                     // or just all values if it's not a strict sequence.
                     for value in t.sequence_values::<LuaFunction>() {
                         extracted.push(value?);
@@ -165,33 +212,26 @@ pub fn register(lua: &Lua) -> LuaResult<()> {
     lua.globals().set(
         "parallel",
         lua.create_async_function({
-            let extract_tasks = extract_tasks.clone();
-            move |_, tasks: LuaMultiValue| {
-                let extract_tasks = extract_tasks.clone();
-                async move {
-                    let tasks = extract_tasks(tasks)?;
-                    let mut futures = Vec::new();
-                    for f in tasks {
-                        futures.push(f.call_async::<()>(()));
-                    }
-                    futures::future::join_all(futures).await;
-                    Ok(())
+            move |_, tasks: LuaMultiValue| async move {
+                let tasks = extract_tasks(tasks)?;
+                let mut futures = Vec::new();
+                for f in tasks {
+                    futures.push(f.call_async::<()>(()));
                 }
+                futures::future::join_all(futures).await;
+                Ok(())
             }
         })?,
     )?;
 
     lua.globals().set(
         "sequential",
-        lua.create_async_function(move |_, tasks: LuaMultiValue| {
-            let extract_tasks = extract_tasks.clone();
-            async move {
-                let tasks = extract_tasks(tasks)?;
-                for f in tasks {
-                    f.call_async::<()>(()).await?;
-                }
-                Ok(())
+        lua.create_async_function(move |_, tasks: LuaMultiValue| async move {
+            let tasks = extract_tasks(tasks)?;
+            for f in tasks {
+                f.call_async::<()>(()).await?;
             }
+            Ok(())
         })?,
     )?;
 

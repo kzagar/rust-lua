@@ -40,17 +40,17 @@ impl log::Log for SimpleLogger {
             // GCP output for INFO and above
             if let (true, Some(client)) = (level <= Level::Info, self.gcp_client.as_ref()) {
                 let severity = match level {
-                        Level::Error => {
-                            if message.contains("[FATAL]") {
-                                "CRITICAL"
-                            } else {
-                                "ERROR"
-                            }
+                    Level::Error => {
+                        if message.contains("[FATAL]") {
+                            "CRITICAL"
+                        } else {
+                            "ERROR"
                         }
-                        Level::Warn => "WARNING",
-                        Level::Info => "INFO",
-                        _ => "DEBUG",
-                    };
+                    }
+                    Level::Warn => "WARNING",
+                    Level::Info => "INFO",
+                    _ => "DEBUG",
+                };
                 client.log(severity, &message);
             }
         }

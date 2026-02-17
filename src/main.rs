@@ -1,5 +1,6 @@
 mod cron;
 mod drive;
+mod file_obj;
 mod gcp_logging;
 mod gmail;
 mod ibkr;
@@ -28,9 +29,11 @@ use uuid::Uuid;
 fn register_modules(lua: &Lua, app_state: Arc<Mutex<AppState>>) -> LuaResult<()> {
     sql::register(lua)?;
     util::register(lua)?;
+    file_obj::register(lua)?;
     re::register(lua)?;
     // Help with finding libraries
-    lua.load(r#"package.path = package.path .. ";lib/?.lua""#).exec()?;
+    lua.load(r#"package.path = package.path .. ";lib/?.lua""#)
+        .exec()?;
     ibkr::register(lua)?;
     web_client::register(lua)?;
     web_server::register(lua, app_state.clone())?;
@@ -102,7 +105,9 @@ async fn main() -> LuaResult<()> {
         Ok(state) => Some(state),
         Err(e) => {
             eprintln!("Warning: Gmail not initialized: {}", e);
-            eprintln!("To enable Gmail support, create a '.secrets' file in the root directory with:");
+            eprintln!(
+                "To enable Gmail support, create a '.secrets' file in the root directory with:"
+            );
             eprintln!("  GOOGLE_CLIENT_SECRET=/path/to/your/google_client_secrets.json");
             eprintln!("  GMAIL_ATTACHMENT_DIR=attachments (Optional)");
             None

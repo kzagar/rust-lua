@@ -708,7 +708,8 @@ pub async fn init_gmail_state() -> Result<Arc<GmailState>, Box<dyn std::error::E
         }
     }
 
-    let credentials_path = google_client_secret.ok_or("Missing GOOGLE_CLIENT_SECRET in .secrets or environment")?;
+    let credentials_path =
+        google_client_secret.ok_or("Missing GOOGLE_CLIENT_SECRET in .secrets or environment")?;
 
     let cred_content = fs::read_to_string(credentials_path)?;
     let config_json: serde_json::Value = serde_json::from_str(&cred_content)?;

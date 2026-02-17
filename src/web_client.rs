@@ -1,6 +1,7 @@
 use mlua::prelude::*;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
+use std::io::Read;
 use std::sync::Arc;
 
 pub struct HttpClient {
@@ -87,9 +88,11 @@ impl LuaUserData for HttpClient {
                                                 res_headers.set(name, value)?;
                                             }
                                         }
-                                        let res_body = res.into_string().map_err(|e| {
-                                            LuaError::RuntimeError(e.to_string())
-                                        })?;
+                                        let mut bytes = Vec::new();
+                                        res.into_reader()
+                                            .read_to_end(&mut bytes)
+                                            .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+                                        let res_body = lua_ref.create_string(&bytes)?;
 
                                         let res_table = lua_ref.create_table()?;
                                         res_table.set("status", status)?;
@@ -132,9 +135,12 @@ impl LuaUserData for HttpClient {
                                 res_headers.set(name, value)?;
                             }
                         }
-                        let res_body = response
-                            .into_string()
+                        let mut bytes = Vec::new();
+                        response
+                            .into_reader()
+                            .read_to_end(&mut bytes)
                             .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+                        let res_body = lua_ref.create_string(&bytes)?;
 
                         let res_table = lua_ref.create_table()?;
                         res_table.set("status", status)?;

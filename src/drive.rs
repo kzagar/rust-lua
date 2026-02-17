@@ -1,3 +1,4 @@
+use crate::file_obj::FileObject;
 use crate::gmail::{GmailState, get_valid_token};
 use crate::types::AppState;
 use chrono::DateTime;
@@ -5,119 +6,41 @@ use mlua::prelude::*;
 use rusqlite::{OptionalExtension, params};
 use std::fs;
 use std::io::Read;
-use std::path::Path;
 use std::sync::{Arc, Mutex};
-
-#[derive(Clone)]
-pub struct DriveFile {
-    pub id: Option<String>,
-    pub name: String,
-    pub mime_type: Option<String>,
-    pub path: Option<String>,
-    pub blob: Option<Vec<u8>>,
-    pub email: Option<String>,
-    pub state: Option<Arc<GmailState>>,
-}
-
-impl LuaUserData for DriveFile {
-    fn add_fields<F: LuaUserDataFields<Self>>(fields: &mut F) {
-        fields.add_field_method_get("name", |_, this| Ok(this.name.clone()));
-        fields.add_field_method_get("mime_type", |_, this| Ok(this.mime_type.clone()));
-        fields.add_field_method_get("path", |_, this| Ok(this.path.clone()));
-        fields.add_field_method_get("id", |_, this| Ok(this.id.clone()));
-    }
-
-    fn add_methods<M: LuaUserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method_mut("mime", |_, this, m: String| {
-            this.mime_type = Some(m);
-            Ok(this.clone())
-        });
-
-        methods.add_method_mut("path", |_, this, p: String| {
-            this.path = Some(p);
-            this.blob = None;
-            if this.mime_type.is_none() {
-                this.mime_type = Some(detect_mime(&this.name));
-            }
-            Ok(this.clone())
-        });
-
-        methods.add_method_mut("blob", |_, this, b: LuaValue| {
-            if let LuaValue::String(s) = b {
-                this.blob = Some(s.as_bytes().to_vec());
-                this.path = None;
-                if this.mime_type.is_none() {
-                    this.mime_type = Some(detect_mime(&this.name));
-                }
-                Ok(this.clone())
-            } else {
-                Err(LuaError::RuntimeError("expected string for blob".into()))
-            }
-        });
-
-        methods.add_async_method("get_blob", |lua: Lua, this, ()| async move {
-            let data = if let Some(ref b) = this.blob {
-                b.clone()
-            } else if let Some(ref p) = this.path {
-                fs::read(p).map_err(|e| LuaError::RuntimeError(e.to_string()))?
-            } else if let Some(ref id) = this.id {
-                let state = this.state.as_ref().ok_or_else(|| {
-                    LuaError::RuntimeError("File has no drive state to download".into())
-                })?;
-                let email = this.email.as_ref().ok_or_else(|| {
-                    LuaError::RuntimeError("File has no email to download".into())
-                })?;
-
-                let token = get_valid_token(state.clone(), email).await?;
-                let url = format!("https://www.googleapis.com/drive/v3/files/{}?alt=media", id);
-                let res = tokio::task::spawn_blocking(move || {
-                    ureq::get(&url)
-                        .set("Authorization", &format!("Bearer {}", token))
-                        .call()
-                })
-                .await
-                .map_err(|e| LuaError::RuntimeError(e.to_string()))?
-                .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
-
-                if res.status() < 200 || res.status() >= 300 {
-                    return Err(LuaError::RuntimeError(format!(
-                        "Failed to download file content: Status {}",
-                        res.status()
-                    )));
-                }
-
-                let mut bytes = Vec::new();
-                res.into_reader()
-                    .read_to_end(&mut bytes)
-                    .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
-                bytes
-            } else {
-                return Err(LuaError::RuntimeError("No data in file object".into()));
-            };
-
-            lua.create_string(&data)
-        });
-    }
-}
-
-fn detect_mime(name: &str) -> String {
-    let ext = Path::new(name)
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("");
-    match ext.to_lowercase().as_str() {
-        "json" => "application/json".to_string(),
-        "txt" => "text/plain".to_string(),
-        "html" => "text/html".to_string(),
-        "pdf" => "application/pdf".to_string(),
-        "zip" => "application/zip".to_string(),
-        _ => "application/octet-stream".to_string(),
-    }
-}
 
 pub struct Drive {
     pub email: String,
     pub state: Arc<GmailState>,
+}
+
+async fn download_drive_file(
+    state: Arc<GmailState>,
+    email: String,
+    id: String,
+) -> LuaResult<Vec<u8>> {
+    let token = get_valid_token(state, &email).await?;
+    let url = format!("https://www.googleapis.com/drive/v3/files/{}?alt=media", id);
+    let res = tokio::task::spawn_blocking(move || {
+        ureq::get(&url)
+            .set("Authorization", &format!("Bearer {}", token))
+            .call()
+    })
+    .await
+    .map_err(|e| LuaError::RuntimeError(e.to_string()))?
+    .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+
+    if res.status() < 200 || res.status() >= 300 {
+        return Err(LuaError::RuntimeError(format!(
+            "Failed to download file content: Status {}",
+            res.status()
+        )));
+    }
+
+    let mut bytes = Vec::new();
+    res.into_reader()
+        .read_to_end(&mut bytes)
+        .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+    Ok(bytes)
 }
 
 impl LuaUserData for Drive {
@@ -160,7 +83,7 @@ impl LuaUserData for Drive {
 
             let results = lua.create_table()?;
             for (i, f) in files_json.iter().enumerate() {
-                let drive_file = DriveFile {
+                let mut drive_file = FileObject {
                     id: f.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()),
                     name: f
                         .get("name")
@@ -173,9 +96,27 @@ impl LuaUserData for Drive {
                         .map(|s| s.to_string()),
                     path: None,
                     blob: None,
-                    email: Some(this.email.clone()),
-                    state: Some(this.state.clone()),
+                    downloader: None,
                 };
+
+                let email = this.email.clone();
+                let state = this.state.clone();
+                let downloader =
+                    lua.create_async_function(move |lua, file_ud: LuaAnyUserData| {
+                        let email = email.clone();
+                        let state = state.clone();
+                        async move {
+                            let file = file_ud.borrow::<FileObject>()?;
+                            let id = file
+                                .id
+                                .as_ref()
+                                .ok_or_else(|| LuaError::RuntimeError("File has no ID".into()))?;
+                            let data = download_drive_file(state, email, id.clone()).await?;
+                            lua.create_string(&data)
+                        }
+                    })?;
+                drive_file.downloader = Some(Arc::new(lua.create_registry_value(downloader)?));
+
                 results.set(i + 1, drive_file)?;
             }
             Ok(results)
@@ -185,7 +126,7 @@ impl LuaUserData for Drive {
             resolve_path(this.state.clone(), &this.email, &path).await
         });
 
-        methods.add_async_method("get_file", |_, this, id: String| async move {
+        methods.add_async_method("get_file", |lua: Lua, this, id: String| async move {
             let token = get_valid_token(this.state.clone(), &this.email).await?;
 
             // Get metadata
@@ -204,30 +145,10 @@ impl LuaUserData for Drive {
                 .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
             // Get content
-            let url_media = format!("https://www.googleapis.com/drive/v3/files/{}?alt=media", id);
-            let res_media = tokio::task::spawn_blocking(move || {
-                ureq::get(&url_media)
-                    .set("Authorization", &format!("Bearer {}", token))
-                    .call()
-            })
-            .await
-            .map_err(|e| LuaError::RuntimeError(e.to_string()))?
-            .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+            let data =
+                download_drive_file(this.state.clone(), this.email.clone(), id.clone()).await?;
 
-            if res_media.status() < 200 || res_media.status() >= 300 {
-                return Err(LuaError::RuntimeError(format!(
-                    "Failed to get file content: Status {}",
-                    res_media.status()
-                )));
-            }
-
-            let mut bytes = Vec::new();
-            res_media
-                .into_reader()
-                .read_to_end(&mut bytes)
-                .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
-
-            Ok(DriveFile {
+            let mut drive_file = FileObject {
                 id: Some(id),
                 name: metadata
                     .get("name")
@@ -239,10 +160,28 @@ impl LuaUserData for Drive {
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string()),
                 path: None,
-                blob: Some(bytes),
-                email: Some(this.email.clone()),
-                state: Some(this.state.clone()),
-            })
+                blob: Some(data),
+                downloader: None,
+            };
+
+            let email = this.email.clone();
+            let state = this.state.clone();
+            let downloader = lua.create_async_function(move |lua, file_ud: LuaAnyUserData| {
+                let email = email.clone();
+                let state = state.clone();
+                async move {
+                    let file = file_ud.borrow::<FileObject>()?;
+                    let id = file
+                        .id
+                        .as_ref()
+                        .ok_or_else(|| LuaError::RuntimeError("File has no ID".into()))?;
+                    let data = download_drive_file(state, email, id.clone()).await?;
+                    lua.create_string(&data)
+                }
+            })?;
+            drive_file.downloader = Some(Arc::new(lua.create_registry_value(downloader)?));
+
+            Ok(drive_file)
         });
 
         methods.add_async_method("get_folder", |lua: Lua, this, id_or_path: String| async move {
@@ -254,25 +193,45 @@ impl LuaUserData for Drive {
 
             let token = get_valid_token(this.state.clone(), &this.email).await?;
             let q = format!("'{}' in parents and trashed = false", id);
-            let url = format!("https://www.googleapis.com/drive/v3/files?q={}&fields=files(id, name, modifiedTime)", urlencoding::encode(&q));
+            let url = format!(
+                "https://www.googleapis.com/drive/v3/files?q={}&fields=files(id, name, modifiedTime)",
+                urlencoding::encode(&q)
+            );
 
             let res = tokio::task::spawn_blocking(move || {
                 ureq::get(&url)
                     .set("Authorization", &format!("Bearer {}", token))
                     .call()
-            }).await.map_err(|e| LuaError::RuntimeError(e.to_string()))?
+            })
+            .await
+            .map_err(|e| LuaError::RuntimeError(e.to_string()))?
             .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
-            let json: serde_json::Value = res.into_json()
+            let json: serde_json::Value = res
+                .into_json()
                 .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
-            let files_json = json.get("files").and_then(|f| f.as_array()).ok_or_else(|| LuaError::RuntimeError("Invalid response".into()))?;
+            let files_json = json
+                .get("files")
+                .and_then(|f| f.as_array())
+                .ok_or_else(|| LuaError::RuntimeError("Invalid response".into()))?;
 
             let results = lua.create_table()?;
             for (i, f) in files_json.iter().enumerate() {
                 let item = lua.create_table()?;
-                item.set("id", f.get("id").and_then(|v| v.as_str()).unwrap_or_default())?;
-                item.set("name", f.get("name").and_then(|v| v.as_str()).unwrap_or_default())?;
-                item.set("modifiedTime", f.get("modifiedTime").and_then(|v| v.as_str()).unwrap_or_default())?;
+                item.set(
+                    "id",
+                    f.get("id").and_then(|v| v.as_str()).unwrap_or_default(),
+                )?;
+                item.set(
+                    "name",
+                    f.get("name").and_then(|v| v.as_str()).unwrap_or_default(),
+                )?;
+                item.set(
+                    "modifiedTime",
+                    f.get("modifiedTime")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default(),
+                )?;
                 results.set(i + 1, item)?;
             }
             Ok(results)
@@ -288,7 +247,7 @@ impl LuaUserData for Drive {
                     folder_id_or_path
                 };
 
-                let file = file_val.borrow::<DriveFile>()?;
+                let file = file_val.borrow::<FileObject>()?;
 
                 let token = get_valid_token(this.state.clone(), &this.email).await?;
 
@@ -399,16 +358,34 @@ impl LuaUserData for Drive {
             },
         );
 
-        methods.add_method("new_file", |_, this, name: String| {
-            Ok(DriveFile {
+        methods.add_method("new_file", |lua, this, name: String| {
+            let mut drive_file = FileObject {
                 id: None,
                 name,
                 mime_type: None,
                 path: None,
                 blob: None,
-                email: Some(this.email.clone()),
-                state: Some(this.state.clone()),
-            })
+                downloader: None,
+            };
+
+            let email = this.email.clone();
+            let state = this.state.clone();
+            let downloader = lua.create_async_function(move |lua, file_ud: LuaAnyUserData| {
+                let email = email.clone();
+                let state = state.clone();
+                async move {
+                    let file = file_ud.borrow::<FileObject>()?;
+                    let id = file
+                        .id
+                        .as_ref()
+                        .ok_or_else(|| LuaError::RuntimeError("File has no ID".into()))?;
+                    let data = download_drive_file(state, email, id.clone()).await?;
+                    lua.create_string(&data)
+                }
+            })?;
+            drive_file.downloader = Some(Arc::new(lua.create_registry_value(downloader)?));
+
+            Ok(drive_file)
         });
     }
 }
@@ -468,63 +445,82 @@ pub fn register(lua: &Lua, _app_state: Arc<Mutex<AppState>>) -> LuaResult<()> {
     let drive_mod = lua.create_table()?;
     let state_clone = _app_state.clone();
 
-    drive_mod.set("login", lua.create_async_function(move |lua: Lua, email: String| {
-        let state_clone = state_clone.clone();
-        async move {
-            let drive_state = {
-                let state = state_clone.lock().unwrap();
-                state.drive_state.clone()
-            };
+    drive_mod.set(
+        "login",
+        lua.create_async_function(move |lua: Lua, email: String| {
+            let state_clone = state_clone.clone();
+            async move {
+                let drive_state = {
+                    let state = state_clone.lock().unwrap();
+                    state.drive_state.clone()
+                };
 
-            let drive_state = match drive_state {
-                Some(s) => s,
-                None => return Err(LuaError::RuntimeError("Drive state not initialized".into())),
-            };
+                let drive_state = match drive_state {
+                    Some(s) => s,
+                    None => {
+                        return Err(LuaError::RuntimeError("Drive state not initialized".into()))
+                    }
+                };
 
-            let scopes: Option<String> = {
-                let db = drive_state.db_conn.lock().unwrap();
-                db.query_row("SELECT scopes FROM google_tokens WHERE email = ?", params![email], |row| row.get(0))
+                let scopes: Option<String> = {
+                    let db = drive_state.db_conn.lock().unwrap();
+                    db.query_row(
+                        "SELECT scopes FROM google_tokens WHERE email = ?",
+                        params![email],
+                        |row| row.get(0),
+                    )
                     .optional()
                     .map_err(|e| LuaError::RuntimeError(e.to_string()))?
-            };
+                };
 
-            let authorized = scopes.is_some_and(|s| s.contains("https://www.googleapis.com/auth/drive"));
+                let authorized =
+                    scopes.is_some_and(|s| s.contains("https://www.googleapis.com/auth/drive"));
 
-            let res = lua.create_table()?;
-            if authorized {
-                res.set("status", "authorized")?;
-                res.set("drive", Drive { email, state: drive_state })?;
-            } else {
-                let mut auth_url = url::Url::parse("https://accounts.google.com/o/oauth2/v2/auth").unwrap();
-                {
-                    let mut query = auth_url.query_pairs_mut();
-                    query.append_pair("client_id", &drive_state.config.client_id);
-                    query.append_pair("redirect_uri", &drive_state.config.redirect_uri);
-                    query.append_pair("response_type", "code");
-                    query.append_pair("scope", "https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/gmail.compose https://www.googleapis.com/auth/drive");
-                    query.append_pair("access_type", "offline");
-                    query.append_pair("prompt", "consent");
-                    query.append_pair("state", &email);
+                let res = lua.create_table()?;
+                if authorized {
+                    res.set("status", "authorized")?;
+                    res.set(
+                        "drive",
+                        Drive {
+                            email,
+                            state: drive_state,
+                        },
+                    )?;
+                } else {
+                    let mut auth_url =
+                        url::Url::parse("https://accounts.google.com/o/oauth2/v2/auth").unwrap();
+                    {
+                        let mut query = auth_url.query_pairs_mut();
+                        query.append_pair("client_id", &drive_state.config.client_id);
+                        query.append_pair("redirect_uri", &drive_state.config.redirect_uri);
+                        query.append_pair("response_type", "code");
+                        query.append_pair(
+                            "scope",
+                            "https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/gmail.compose https://www.googleapis.com/auth/drive",
+                        );
+                        query.append_pair("access_type", "offline");
+                        query.append_pair("prompt", "consent");
+                        query.append_pair("state", &email);
+                    }
+
+                    res.set("status", "unauthorized")?;
+                    res.set("auth_url", auth_url.to_string())?;
                 }
-
-                res.set("status", "unauthorized")?;
-                res.set("auth_url", auth_url.to_string())?;
+                Ok(res)
             }
-            Ok(res)
-        }
-    })?)?;
+        })?,
+    )?;
 
     drive_mod.set(
         "new_file",
         lua.create_function(|_, name: String| {
-            Ok(DriveFile {
+            Ok(FileObject {
                 id: None,
                 name,
                 mime_type: None,
                 path: None,
                 blob: None,
-                email: None,
-                state: None,
+                downloader: None,
             })
         })?,
     )?;
