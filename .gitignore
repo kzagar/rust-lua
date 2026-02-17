@@ -1,6 +1,7 @@
 .secrets
 .venv
 .env
+attachments
 temp
 lua
 /target
