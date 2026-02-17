@@ -4,6 +4,7 @@ mod gcp_logging;
 mod gmail;
 mod ibkr;
 mod logger;
+mod re;
 mod reverse_proxy;
 mod sql;
 mod telegram;
@@ -27,6 +28,9 @@ use uuid::Uuid;
 fn register_modules(lua: &Lua, app_state: Arc<Mutex<AppState>>) -> LuaResult<()> {
     sql::register(lua)?;
     util::register(lua)?;
+    re::register(lua)?;
+    // Help with finding libraries
+    lua.load(r#"package.path = package.path .. ";lib/?.lua""#).exec()?;
     ibkr::register(lua)?;
     web_client::register(lua)?;
     web_server::register(lua, app_state.clone())?;
