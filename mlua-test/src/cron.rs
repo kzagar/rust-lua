@@ -1,8 +1,9 @@
 use crate::types::{AppState, CronJobInfo, EngineRequest};
+use chrono::{DateTime, Local};
+use croner::Cron;
 use mlua::prelude::*;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::Sender;
-use tokio_cron_scheduler::{Job, JobScheduler};
 
 pub struct CronScheduler {
     state: Arc<Mutex<AppState>>,
@@ -45,62 +46,78 @@ pub fn register(lua: &Lua, app_state: Arc<Mutex<AppState>>) -> LuaResult<()> {
 pub async fn start(
     app_state: Arc<Mutex<AppState>>,
     tx: Sender<EngineRequest>,
-) -> Option<JobScheduler> {
-    let res = {
+) -> Option<tokio::task::JoinHandle<()>> {
+    let has_jobs = {
         let state = app_state.lock().unwrap();
         !state.cron_jobs.is_empty()
     };
 
-    if res {
-        match JobScheduler::new().await {
-            Ok(sched) => {
-                let jobs: Vec<_> = {
-                    let state = app_state.lock().unwrap();
-                    state
-                        .cron_jobs
-                        .iter()
-                        .map(|job_info| (job_info.callback_id, job_info.expression.clone()))
-                        .collect()
-                };
+    if has_jobs {
+        let jobs: Vec<_> = {
+            let state = app_state.lock().unwrap();
+            state
+                .cron_jobs
+                .iter()
+                .map(|job_info| (job_info.callback_id, job_info.expression.clone()))
+                .collect()
+        };
 
-                for (id, expr) in jobs {
-                    let tx_clone = tx.clone();
-                    let job_res = Job::new_async(expr.as_str(), move |_uuid, _l| {
-                        let tx = tx_clone.clone();
-                        Box::pin(async move {
-                            if let Err(e) = tx.send(EngineRequest::Cron(id)).await {
-                                eprintln!("Failed to send cron trigger: {}", e);
-                            }
-                        })
-                    });
+        let handle = tokio::spawn(async move {
+            let mut cron_jobs: Vec<(usize, Cron)> = Vec::new();
+            for (id, expr) in jobs {
+                // Try parsing using the Parse trait which Cron implements
+                match expr.parse::<Cron>() {
+                    Ok(cron) => cron_jobs.push((id, cron)),
+                    Err(e) => eprintln!("Invalid cron expression '{}': {}", expr, e),
+                }
+            }
 
-                    match job_res {
-                        Ok(job) => {
-                            if let Err(e) = sched.add(job).await {
-                                eprintln!(
-                                    "Failed to add cron job for expression '{}': {}",
-                                    expr, e
-                                );
+            if cron_jobs.is_empty() {
+                return;
+            }
+
+            println!("Cron scheduler started with {} jobs.", cron_jobs.len());
+
+            loop {
+                let now = Local::now();
+                let mut next_run: Option<(DateTime<Local>, Vec<usize>)> = None;
+
+                for (id, cron) in &cron_jobs {
+                    if let Ok(next) = cron.find_next_occurrence(&now, false) {
+                        match next_run {
+                            None => next_run = Some((next, vec![*id])),
+                            Some((curr_next, ref mut ids)) => {
+                                if next < curr_next {
+                                    next_run = Some((next, vec![*id]));
+                                } else if next == curr_next {
+                                    ids.push(*id);
+                                }
                             }
-                        }
-                        Err(e) => {
-                            eprintln!("Invalid cron expression '{}': {}", expr, e);
                         }
                     }
                 }
-                if let Err(e) = sched.start().await {
-                    eprintln!("Failed to start cron scheduler: {}", e);
-                    None
+
+                if let Some((next, ids)) = next_run {
+                    let sleep_duration = next
+                        .signed_duration_since(now)
+                        .to_std()
+                        .unwrap_or(std::time::Duration::from_secs(0));
+                    tokio::time::sleep(sleep_duration).await;
+
+                    for id in ids {
+                        if let Err(e) = tx.send(EngineRequest::Cron(id)).await {
+                            eprintln!("Failed to send cron trigger: {}", e);
+                        }
+                    }
+                    // Avoid tight loop
+                    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
                 } else {
-                    println!("Cron scheduler started.");
-                    Some(sched)
+                    break;
                 }
             }
-            Err(e) => {
-                eprintln!("Failed to create job scheduler: {}", e);
-                None
-            }
-        }
+        });
+
+        Some(handle)
     } else {
         None
     }

@@ -6,7 +6,7 @@ use axum::{
     response::IntoResponse,
     routing::{delete, get, post, put},
 };
-use axum_server::tls_rustls::RustlsConfig;
+use axum_server::tls_openssl::OpenSSLConfig as OpenSslConfig;
 use mlua::prelude::*;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
@@ -243,7 +243,7 @@ pub async fn start(
             Some(ServerConfig::Https(addr, cert, key)) => {
                 println!("REST server listening (TLS) on https://{}", addr);
                 let config_res =
-                    RustlsConfig::from_pem_file(PathBuf::from(cert), PathBuf::from(key)).await;
+                    OpenSslConfig::from_pem_file(PathBuf::from(cert), PathBuf::from(key));
                 match config_res {
                     Ok(tls_config) => {
                         let addr_parsed: Result<std::net::SocketAddr, _> = addr.parse();
@@ -251,7 +251,7 @@ pub async fn start(
                             Ok(socket_addr) => {
                                 let server_handle = tokio::spawn(async move {
                                     if let Err(e) =
-                                        axum_server::bind_rustls(socket_addr, tls_config)
+                                        axum_server::bind_openssl(socket_addr, tls_config)
                                             .serve(router.into_make_service())
                                             .await
                                     {

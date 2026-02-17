@@ -1,9 +1,9 @@
-use rua::LuaState;
-use rua::parser::Parser;
 use clap::Parser as ClapParser;
-use std::path::PathBuf;
-use std::fs;
+use rua::parser::Parser;
 use rua::state::ThreadStatus;
+use rua::LuaState;
+use std::fs;
+use std::path::PathBuf;
 
 #[derive(ClapParser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -20,10 +20,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let input = fs::read(&args.file)?;
 
     let mut lua = LuaState::new();
-    
+
     // Open standard libraries (print, etc.)
     rua::stdlib::open_libs(&mut lua);
-    
+
     // Register rua-resty-http
     rua_resty_http::register(&mut lua);
 

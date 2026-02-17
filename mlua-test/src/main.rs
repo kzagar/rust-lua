@@ -5,7 +5,6 @@ mod sql;
 mod telegram;
 mod types;
 mod util;
-mod watcher;
 mod web_client;
 mod web_server;
 
@@ -17,6 +16,7 @@ use mlua::serde::LuaSerdeExt;
 use std::fs;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -55,7 +55,7 @@ fn register_modules(lua: &Lua, app_state: Arc<Mutex<AppState>>) -> LuaResult<()>
     Ok(())
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> LuaResult<()> {
     let args: Vec<String> = std::env::args().collect();
     let path_str = if args.len() > 1 {
@@ -71,8 +71,18 @@ async fn main() -> LuaResult<()> {
 
     let (tx, mut rx) = mpsc::channel(1);
 
-    // Setup file watcher
-    let _debouncer = watcher::setup_watcher(&abs_path, tx)?;
+    // Setup SIGHUP signal handler for reload
+    let mut sighup = signal(SignalKind::hangup())
+        .map_err(|e| LuaError::RuntimeError(format!("Failed to setup SIGHUP handler: {}", e)))?;
+
+    let tx_sighup = tx.clone();
+    tokio::spawn(async move {
+        loop {
+            sighup.recv().await;
+            println!("SIGHUP received, reloading...");
+            let _ = tx_sighup.send(()).await;
+        }
+    });
 
     let lua = Lua::new();
     let gmail_state = gmail::init_gmail_state().await.ok();
@@ -117,7 +127,8 @@ async fn main() -> LuaResult<()> {
         }
 
         let content = fs::read_to_string(&abs_path)
-            .map_err(|e| LuaError::RuntimeError(format!("Failed to read {}: {}", path_str, e)))?;
+            .map_err(|e| L
+              uaError::RuntimeError(format!("Failed to read {}: {}", path_str, e)))?;
 
         println!("--- Running Lua script: {} ---", path_str);
 

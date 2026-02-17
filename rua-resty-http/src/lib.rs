@@ -1,8 +1,8 @@
-use rua::value::{Value, LuaUserData, Table, UserData};
-use rua::state::LuaState;
-use rua::gc::GCTrace;
-use rua::error::LuaError;
 use futures::future::{BoxFuture, FutureExt};
+use rua::error::LuaError;
+use rua::gc::GCTrace;
+use rua::state::LuaState;
+use rua::value::{LuaUserData, Table, UserData, Value};
 use std::any::Any;
 use std::collections::HashMap;
 
@@ -15,8 +15,12 @@ impl GCTrace for HttpClient {
 }
 
 impl LuaUserData for HttpClient {
-    fn as_any(&self) -> &dyn Any { self }
-    fn as_any_mut(&mut self) -> &mut dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
 }
 
 pub fn register(state: &mut LuaState) {
@@ -72,7 +76,8 @@ fn http_new(state: &mut LuaState) -> BoxFuture<'_, Result<usize, LuaError>> {
         unsafe {
             let mt = &mut (*mt_gc.ptr.as_ptr()).data;
             mt.map.insert(index_key, Value::Table(mt_gc)); // __index = mt
-            mt.map.insert(request_uri_key, Value::RustFunction(http_request_uri));
+            mt.map
+                .insert(request_uri_key, Value::RustFunction(http_request_uri));
         }
 
         let ud = UserData {
@@ -84,7 +89,8 @@ fn http_new(state: &mut LuaState) -> BoxFuture<'_, Result<usize, LuaError>> {
         state.stack[state.top] = Value::UserData(ud_gc);
         state.top += 1;
         Ok(1)
-    }.boxed()
+    }
+    .boxed()
 }
 
 fn http_request_uri(state: &mut LuaState) -> BoxFuture<'_, Result<usize, LuaError>> {
@@ -98,22 +104,32 @@ fn http_request_uri(state: &mut LuaState) -> BoxFuture<'_, Result<usize, LuaErro
         let (client, uri, params) = {
             let ud_val = state.stack[func_idx + 1];
             let uri_val = state.stack[func_idx + 2];
-            let params_val = if state.top > func_idx + 3 { state.stack[func_idx + 3] } else { Value::Nil };
+            let params_val = if state.top > func_idx + 3 {
+                state.stack[func_idx + 3]
+            } else {
+                Value::Nil
+            };
 
             let client = if let Value::UserData(ud) = ud_val {
                 if let Some(c) = ud.data.as_any().downcast_ref::<HttpClient>() {
                     c.client.clone()
                 } else {
-                    return Err(LuaError::RuntimeError("expected HttpClient userdata".to_string()));
+                    return Err(LuaError::RuntimeError(
+                        "expected HttpClient userdata".to_string(),
+                    ));
                 }
             } else {
-                return Err(LuaError::RuntimeError("expected self as first argument".to_string()));
+                return Err(LuaError::RuntimeError(
+                    "expected self as first argument".to_string(),
+                ));
             };
 
             let uri = if let Value::String(s) = uri_val {
                 s.to_string()
             } else {
-                return Err(LuaError::RuntimeError("expected uri string as second argument".to_string()));
+                return Err(LuaError::RuntimeError(
+                    "expected uri string as second argument".to_string(),
+                ));
             };
 
             (client, uri, params_val)
@@ -154,7 +170,12 @@ fn http_request_uri(state: &mut LuaState) -> BoxFuture<'_, Result<usize, LuaErro
             "POST" => client.post(&uri),
             "PUT" => client.put(&uri),
             "DELETE" => client.delete(&uri),
-            _ => return Err(LuaError::RuntimeError(format!("unsupported method {}", method))),
+            _ => {
+                return Err(LuaError::RuntimeError(format!(
+                    "unsupported method {}",
+                    method
+                )));
+            }
         };
 
         if let Some(b) = body {
@@ -184,7 +205,9 @@ fn http_request_uri(state: &mut LuaState) -> BoxFuture<'_, Result<usize, LuaErro
                 res_table.map.insert(status_key, Value::Integer(status));
 
                 let body_key = Value::String(global.heap.allocate("body".to_string()));
-                res_table.map.insert(body_key, Value::String(global.heap.allocate(body_text)));
+                res_table
+                    .map
+                    .insert(body_key, Value::String(global.heap.allocate(body_text)));
 
                 let headers_key = Value::String(global.heap.allocate("headers".to_string()));
                 let mut headers_table = Table::new();
@@ -193,7 +216,10 @@ fn http_request_uri(state: &mut LuaState) -> BoxFuture<'_, Result<usize, LuaErro
                     let hv = Value::String(global.heap.allocate(v));
                     headers_table.map.insert(hk, hv);
                 }
-                res_table.map.insert(headers_key, Value::Table(global.heap.allocate(headers_table)));
+                res_table.map.insert(
+                    headers_key,
+                    Value::Table(global.heap.allocate(headers_table)),
+                );
 
                 let res_table_gc = global.heap.allocate(res_table);
                 state.stack[state.top] = Value::Table(res_table_gc);
@@ -209,7 +235,8 @@ fn http_request_uri(state: &mut LuaState) -> BoxFuture<'_, Result<usize, LuaErro
                 Ok(2)
             }
         }
-    }.boxed()
+    }
+    .boxed()
 }
 
 #[cfg(test)]
@@ -237,9 +264,15 @@ mod tests {
                     if let Value::Table(http_gc) = http_table {
                         let new_key = Value::String(global.heap.allocate("new".to_string()));
                         *http_gc.map.get(&new_key).unwrap()
-                    } else { panic!() }
-                } else { panic!() }
-            } else { panic!() }
+                    } else {
+                        panic!()
+                    }
+                } else {
+                    panic!()
+                }
+            } else {
+                panic!()
+            }
         };
 
         if let Value::RustFunction(f) = http_new_val {
@@ -265,13 +298,25 @@ mod tests {
         // 1. Call new() to get httpc
         let http_new_val = {
             let mut global = lua.global.lock().unwrap();
-            let globals_gc = match global.globals { Value::Table(t) => t, _ => panic!() };
+            let globals_gc = match global.globals {
+                Value::Table(t) => t,
+                _ => panic!(),
+            };
             let resty_key = Value::String(global.heap.allocate("resty".to_string()));
-            let resty_table = match globals_gc.map.get(&resty_key).unwrap() { Value::Table(t) => t, _ => panic!() };
+            let resty_table = match globals_gc.map.get(&resty_key).unwrap() {
+                Value::Table(t) => t,
+                _ => panic!(),
+            };
             let http_key = Value::String(global.heap.allocate("http".to_string()));
-            let http_table = match resty_table.map.get(&http_key).unwrap() { Value::Table(t) => t, _ => panic!() };
+            let http_table = match resty_table.map.get(&http_key).unwrap() {
+                Value::Table(t) => t,
+                _ => panic!(),
+            };
             let new_key = Value::String(global.heap.allocate("new".to_string()));
-            match http_table.map.get(&new_key).unwrap() { Value::RustFunction(f) => *f, _ => panic!() }
+            match http_table.map.get(&new_key).unwrap() {
+                Value::RustFunction(f) => *f,
+                _ => panic!(),
+            }
         };
 
         http_new_val(&mut lua).await.unwrap();
@@ -286,7 +331,9 @@ mod tests {
                 Value::String(global.heap.allocate("request_uri".to_string()))
             };
             *mt.map.get(&key).unwrap()
-        } else { panic!() };
+        } else {
+            panic!()
+        };
 
         lua.stack[lua.top] = request_uri_func;
         lua.stack[lua.top + 1] = httpc;
