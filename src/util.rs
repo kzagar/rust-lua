@@ -5,6 +5,46 @@ use sha2::Sha256;
 type HmacSha256 = Hmac<Sha256>;
 
 pub fn register(lua: &Lua) -> LuaResult<()> {
+    let logging = lua.create_table()?;
+    logging.set(
+        "debug",
+        lua.create_function(|_, msg: String| {
+            log::debug!("{}", msg);
+            Ok(())
+        })?,
+    )?;
+    logging.set(
+        "info",
+        lua.create_function(|_, msg: String| {
+            log::info!("{}", msg);
+            Ok(())
+        })?,
+    )?;
+    logging.set(
+        "warn",
+        lua.create_function(|_, msg: String| {
+            log::warn!("{}", msg);
+            Ok(())
+        })?,
+    )?;
+    logging.set(
+        "error",
+        lua.create_function(|_, msg: String| {
+            log::error!("{}", msg);
+            Ok(())
+        })?,
+    )?;
+    logging.set(
+        "fatal",
+        lua.create_function(|_, msg: String| {
+            // We use error level for fatal, but the logger could be improved to handle this.
+            // For GCP, we might want CRITICAL.
+            log::error!("[FATAL] {}", msg);
+            Ok(())
+        })?,
+    )?;
+    lua.globals().set("logging", logging)?;
+
     let crypto = lua.create_table()?;
     crypto.set(
         "hmac_sha256",
