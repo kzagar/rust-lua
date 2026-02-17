@@ -1,6 +1,7 @@
 mod cron;
 mod gmail;
 mod ibkr;
+mod reverse_proxy;
 mod sql;
 mod telegram;
 mod types;
@@ -29,6 +30,7 @@ fn register_modules(lua: &Lua, app_state: Arc<Mutex<AppState>>) -> LuaResult<()>
     cron::register(lua, app_state.clone())?;
     telegram::register(lua, app_state.clone())?;
     gmail::register(lua, app_state.clone())?;
+    reverse_proxy::register(lua, app_state.clone())?;
 
     // Help with random strings
     let uuid_func = lua.create_function(|_, ()| Ok(Uuid::new_v4().to_string()))?;
@@ -107,9 +109,11 @@ async fn main() -> LuaResult<()> {
         routes: Vec::new(),
         static_routes: Vec::new(),
         cron_jobs: Vec::new(),
+        reverse_proxies: Vec::new(),
         telegram_handler: None,
         config: None,
         gmail_state,
+        engine_tx: None,
     }));
     register_modules(&lua, app_state.clone())?;
 
@@ -122,13 +126,14 @@ async fn main() -> LuaResult<()> {
             state.routes.clear();
             state.static_routes.clear();
             state.cron_jobs.clear();
+            state.reverse_proxies.clear();
             state.telegram_handler = None;
             state.config = None;
+            state.engine_tx = None;
         }
 
         let content = fs::read_to_string(&abs_path)
-            .map_err(|e| L
-              uaError::RuntimeError(format!("Failed to read {}: {}", path_str, e)))?;
+            .map_err(|e| LuaError::RuntimeError(format!("Failed to read {}: {}", path_str, e)))?;
 
         println!("--- Running Lua script: {} ---", path_str);
 
@@ -149,6 +154,7 @@ async fn main() -> LuaResult<()> {
                         !state.routes.is_empty()
                             || !state.static_routes.is_empty()
                             || !state.cron_jobs.is_empty()
+                            || !state.reverse_proxies.is_empty()
                             || state.telegram_handler.is_some()
                     };
 
@@ -298,6 +304,46 @@ async fn main() -> LuaResult<()> {
                                                         "Failed to retrieve telegram callback function"
                                                     );
                                                 }
+                                            }
+                                            EngineRequest::ProxyAuth(req) => {
+                                                let func: LuaFunction = match lua
+                                                    .registry_value(&req.callback_key)
+                                                {
+                                                    Ok(f) => f,
+                                                    Err(e) => {
+                                                        req.response_tx.send(false).ok();
+                                                        eprintln!(
+                                                            "Failed to get proxy auth callback: {}",
+                                                            e
+                                                        );
+                                                        continue;
+                                                    }
+                                                };
+                                                let email = req.email;
+                                                let domain = req.domain;
+                                                let response_tx = req.response_tx;
+
+                                                let fut = async move {
+                                                    let res: LuaResult<LuaValue> =
+                                                        func.call_async((email, domain)).await;
+                                                    match res {
+                                                        Ok(val) => {
+                                                            let allowed = match val {
+                                                                LuaValue::Boolean(b) => b,
+                                                                _ => false,
+                                                            };
+                                                            response_tx.send(allowed).ok();
+                                                        }
+                                                        Err(e) => {
+                                                            eprintln!(
+                                                                "Error in proxy auth callback: {}",
+                                                                e
+                                                            );
+                                                            response_tx.send(false).ok();
+                                                        }
+                                                    }
+                                                };
+                                                pending_requests.push(Box::pin(fut));
                                             }
                                         }
                                     }
