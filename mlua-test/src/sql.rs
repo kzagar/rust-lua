@@ -1,5 +1,5 @@
 use mlua::prelude::*;
-use rusqlite::{params, Connection, ToSql};
+use rusqlite::{Connection, ToSql, params};
 use std::sync::{Arc, Mutex};
 
 pub struct Database {

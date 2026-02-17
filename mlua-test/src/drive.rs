@@ -1,11 +1,11 @@
-use crate::gmail::{get_valid_token, GmailState};
+use crate::gmail::{GmailState, get_valid_token};
 use crate::types::AppState;
+use chrono::DateTime;
 use mlua::prelude::*;
-use std::sync::{Arc, Mutex};
+use rusqlite::{OptionalExtension, params};
 use std::fs;
 use std::path::Path;
-use chrono::DateTime;
-use rusqlite::{params, OptionalExtension};
+use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
 pub struct DriveFile {
@@ -60,28 +60,37 @@ impl LuaUserData for DriveFile {
             } else if let Some(ref p) = this.path {
                 fs::read(p).map_err(|e| LuaError::RuntimeError(e.to_string()))?
             } else if let Some(ref id) = this.id {
-                let state = this.state.as_ref().ok_or_else(|| LuaError::RuntimeError("File has no drive state to download".into()))?;
-                let email = this.email.as_ref().ok_or_else(|| LuaError::RuntimeError("File has no email to download".into()))?;
+                let state = this.state.as_ref().ok_or_else(|| {
+                    LuaError::RuntimeError("File has no drive state to download".into())
+                })?;
+                let email = this.email.as_ref().ok_or_else(|| {
+                    LuaError::RuntimeError("File has no email to download".into())
+                })?;
 
                 let token = get_valid_token(state.clone(), email).await?;
-                let res = state.client.get(format!("https://www.googleapis.com/drive/v3/files/{}?alt=media", id))
-                    .bearer_auth(&token)
-                    .send()
-                    .await
-                    .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+                let url = format!("https://www.googleapis.com/drive/v3/files/{}?alt=media", id);
+                let res = tokio::task::spawn_blocking(move || {
+                    minreq::get(&url)
+                        .with_header("Authorization", format!("Bearer {}", token))
+                        .send()
+                })
+                .await
+                .map_err(|e| LuaError::RuntimeError(e.to_string()))?
+                .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
-                if !res.status().is_success() {
-                    let err_text = res.text().await.unwrap_or_default();
-                    return Err(LuaError::RuntimeError(format!("Failed to download file content: {}", err_text)));
+                if res.status_code < 200 || res.status_code >= 300 {
+                    return Err(LuaError::RuntimeError(format!(
+                        "Failed to download file content: Status {}",
+                        res.status_code
+                    )));
                 }
 
-                let content = res.bytes().await.map_err(|e| LuaError::RuntimeError(e.to_string()))?;
-                content.to_vec()
+                res.into_bytes()
             } else {
                 return Err(LuaError::RuntimeError("No data in file object".into()));
             };
 
-            Ok(lua.create_string(&data)?)
+            lua.create_string(&data)
         });
     }
 }
@@ -121,32 +130,50 @@ impl LuaUserData for Drive {
             let q = q_parts.join(" and ");
 
             let token = get_valid_token(this.state.clone(), &this.email).await?;
-            let mut request = this.state.client.get("https://www.googleapis.com/drive/v3/files");
+            let mut url = "https://www.googleapis.com/drive/v3/files".to_string();
             if !q.is_empty() {
-                request = request.query(&[("q", q.as_str())]);
+                url.push_str("?q=");
+                url.push_str(&urlencoding::encode(&q));
             }
 
-            let res = request
-                .bearer_auth(token)
-                .send()
-                .await
-                .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+            let res = tokio::task::spawn_blocking(move || {
+                minreq::get(&url)
+                    .with_header("Authorization", format!("Bearer {}", token))
+                    .send()
+            })
+            .await
+            .map_err(|e| LuaError::RuntimeError(e.to_string()))?
+            .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
-            let json: serde_json::Value = res.json().await.map_err(|e| LuaError::RuntimeError(e.to_string()))?;
-            let files_json = json.get("files").and_then(|f| f.as_array()).ok_or_else(|| LuaError::RuntimeError("Invalid response".into()))?;
+            let json: serde_json::Value = serde_json::from_str(
+                res.as_str()
+                    .map_err(|e| LuaError::RuntimeError(e.to_string()))?,
+            )
+            .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+            let files_json = json
+                .get("files")
+                .and_then(|f| f.as_array())
+                .ok_or_else(|| LuaError::RuntimeError("Invalid response".into()))?;
 
             let results = lua.create_table()?;
             for (i, f) in files_json.iter().enumerate() {
-                 let drive_file = DriveFile {
-                     id: f.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                     name: f.get("name").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
-                     mime_type: f.get("mimeType").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                     path: None,
-                     blob: None,
-                     email: Some(this.email.clone()),
-                     state: Some(this.state.clone()),
-                 };
-                 results.set(i + 1, drive_file)?;
+                let drive_file = DriveFile {
+                    id: f.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    name: f
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    mime_type: f
+                        .get("mimeType")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    path: None,
+                    blob: None,
+                    email: Some(this.email.clone()),
+                    state: Some(this.state.clone()),
+                };
+                results.set(i + 1, drive_file)?;
             }
             Ok(results)
         });
@@ -159,33 +186,54 @@ impl LuaUserData for Drive {
             let token = get_valid_token(this.state.clone(), &this.email).await?;
 
             // Get metadata
-            let res = this.state.client.get(format!("https://www.googleapis.com/drive/v3/files/{}", id))
-                .bearer_auth(&token)
-                .send()
-                .await
-                .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
-            let metadata: serde_json::Value = res.json().await.map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+            let url_meta = format!("https://www.googleapis.com/drive/v3/files/{}", id);
+            let token_clone = token.clone();
+            let res_meta = tokio::task::spawn_blocking(move || {
+                minreq::get(&url_meta)
+                    .with_header("Authorization", format!("Bearer {}", token_clone))
+                    .send()
+            })
+            .await
+            .map_err(|e| LuaError::RuntimeError(e.to_string()))?
+            .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+            let metadata: serde_json::Value = serde_json::from_str(
+                res_meta
+                    .as_str()
+                    .map_err(|e| LuaError::RuntimeError(e.to_string()))?,
+            )
+            .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
             // Get content
-            let res = this.state.client.get(format!("https://www.googleapis.com/drive/v3/files/{}?alt=media", id))
-                .bearer_auth(&token)
-                .send()
-                .await
-                .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+            let url_media = format!("https://www.googleapis.com/drive/v3/files/{}?alt=media", id);
+            let res_media = tokio::task::spawn_blocking(move || {
+                minreq::get(&url_media)
+                    .with_header("Authorization", format!("Bearer {}", token))
+                    .send()
+            })
+            .await
+            .map_err(|e| LuaError::RuntimeError(e.to_string()))?
+            .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
-            if !res.status().is_success() {
-                let err_text = res.text().await.unwrap_or_default();
-                return Err(LuaError::RuntimeError(format!("Failed to get file content: {}", err_text)));
+            if res_media.status_code < 200 || res_media.status_code >= 300 {
+                return Err(LuaError::RuntimeError(format!(
+                    "Failed to get file content: Status {}",
+                    res_media.status_code
+                )));
             }
-
-            let content = res.bytes().await.map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
             Ok(DriveFile {
                 id: Some(id),
-                name: metadata.get("name").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
-                mime_type: metadata.get("mimeType").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                name: metadata
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                mime_type: metadata
+                    .get("mimeType")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
                 path: None,
-                blob: Some(content.to_vec()),
+                blob: Some(res_media.into_bytes()),
                 email: Some(this.email.clone()),
                 state: Some(this.state.clone()),
             })
@@ -200,14 +248,17 @@ impl LuaUserData for Drive {
 
             let token = get_valid_token(this.state.clone(), &this.email).await?;
             let q = format!("'{}' in parents and trashed = false", id);
-            let res = this.state.client.get("https://www.googleapis.com/drive/v3/files")
-                .query(&[("q", q.as_str()), ("fields", "files(id, name, modifiedTime)")])
-                .bearer_auth(token)
-                .send()
-                .await
-                .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+            let url = format!("https://www.googleapis.com/drive/v3/files?q={}&fields=files(id, name, modifiedTime)", urlencoding::encode(&q));
 
-            let json: serde_json::Value = res.json().await.map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+            let res = tokio::task::spawn_blocking(move || {
+                minreq::get(&url)
+                    .with_header("Authorization", format!("Bearer {}", token))
+                    .send()
+            }).await.map_err(|e| LuaError::RuntimeError(e.to_string()))?
+            .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+
+            let json: serde_json::Value = serde_json::from_str(res.as_str().map_err(|e| LuaError::RuntimeError(e.to_string()))?)
+                .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
             let files_json = json.get("files").and_then(|f| f.as_array()).ok_or_else(|| LuaError::RuntimeError("Invalid response".into()))?;
 
             let results = lua.create_table()?;
@@ -221,70 +272,131 @@ impl LuaUserData for Drive {
             Ok(results)
         });
 
-        methods.add_async_method("upload_file", |_, this, (folder_id_or_path, file_val): (String, LuaAnyUserData)| async move {
-            let folder_id = if folder_id_or_path.starts_with('/') || folder_id_or_path == "root" {
-                resolve_path(this.state.clone(), &this.email, &folder_id_or_path).await?
-            } else {
-                folder_id_or_path
-            };
+        methods.add_async_method(
+            "upload_file",
+            |_, this, (folder_id_or_path, file_val): (String, LuaAnyUserData)| async move {
+                let folder_id = if folder_id_or_path.starts_with('/') || folder_id_or_path == "root"
+                {
+                    resolve_path(this.state.clone(), &this.email, &folder_id_or_path).await?
+                } else {
+                    folder_id_or_path
+                };
 
-            let file = file_val.borrow::<DriveFile>()?;
+                let file = file_val.borrow::<DriveFile>()?;
 
-            let token = get_valid_token(this.state.clone(), &this.email).await?;
+                let token = get_valid_token(this.state.clone(), &this.email).await?;
 
-            // Check if file exists in this folder
-            let q = format!("name = '{}' and '{}' in parents and trashed = false", file.name.replace("'", "\\'"), folder_id);
-            let res = this.state.client.get("https://www.googleapis.com/drive/v3/files")
-                .query(&[("q", q.as_str()), ("fields", "files(id)")])
-                .bearer_auth(&token)
-                .send()
+                // Check if file exists in this folder
+                let q = format!(
+                    "name = '{}' and '{}' in parents and trashed = false",
+                    file.name.replace("'", "\\'"),
+                    folder_id
+                );
+                let url_check = format!(
+                    "https://www.googleapis.com/drive/v3/files?q={}&fields=files(id)",
+                    urlencoding::encode(&q)
+                );
+
+                let token_clone = token.clone();
+                let res_check = tokio::task::spawn_blocking(move || {
+                    minreq::get(&url_check)
+                        .with_header("Authorization", format!("Bearer {}", token_clone))
+                        .send()
+                })
                 .await
+                .map_err(|e| LuaError::RuntimeError(e.to_string()))?
                 .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
-            let json: serde_json::Value = res.json().await.map_err(|e| LuaError::RuntimeError(e.to_string()))?;
-            let files = json.get("files").and_then(|f| f.as_array()).unwrap();
 
-            let data = if let Some(ref b) = file.blob {
-                b.clone()
-            } else if let Some(ref p) = file.path {
-                fs::read(p).map_err(|e| LuaError::RuntimeError(e.to_string()))?
-            } else {
-                return Err(LuaError::RuntimeError("File has no data".into()));
-            };
+                let json: serde_json::Value = serde_json::from_str(
+                    res_check
+                        .as_str()
+                        .map_err(|e| LuaError::RuntimeError(e.to_string()))?,
+                )
+                .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+                let files = json.get("files").and_then(|f| f.as_array()).unwrap();
 
-            if !files.is_empty() {
-                // Update
-                let file_id = files[0].get("id").and_then(|v| v.as_str()).unwrap();
-                let res = this.state.client.patch(format!("https://www.googleapis.com/upload/drive/v3/files/{}?uploadType=media", file_id))
-                    .bearer_auth(&token)
-                    .header("Content-Type", file.mime_type.as_deref().unwrap_or("application/octet-stream"))
-                    .body(data)
-                    .send()
+                let data = if let Some(ref b) = file.blob {
+                    b.clone()
+                } else if let Some(ref p) = file.path {
+                    fs::read(p).map_err(|e| LuaError::RuntimeError(e.to_string()))?
+                } else {
+                    return Err(LuaError::RuntimeError("File has no data".into()));
+                };
+
+                if !files.is_empty() {
+                    // Update
+                    let file_id = files[0].get("id").and_then(|v| v.as_str()).unwrap();
+                    let url_patch = format!(
+                        "https://www.googleapis.com/upload/drive/v3/files/{}?uploadType=media",
+                        file_id
+                    );
+                    let mime = file
+                        .mime_type
+                        .clone()
+                        .unwrap_or_else(|| "application/octet-stream".to_string());
+                    let res = tokio::task::spawn_blocking(move || {
+                        minreq::patch(&url_patch)
+                            .with_header("Authorization", format!("Bearer {}", token))
+                            .with_header("Content-Type", mime)
+                            .with_body(data)
+                            .send()
+                    })
                     .await
+                    .map_err(|e| LuaError::RuntimeError(e.to_string()))?
                     .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
-                Ok(res.status().is_success())
-            } else {
-                // Create
-                let metadata = serde_json::json!({
-                    "name": file.name,
-                    "parents": [folder_id],
-                    "mimeType": file.mime_type
-                });
+                    Ok(res.status_code >= 200 && res.status_code < 300)
+                } else {
+                    // Create
+                    let metadata = serde_json::json!({
+                        "name": file.name,
+                        "parents": [folder_id],
+                        "mimeType": file.mime_type
+                    });
 
-                let form = reqwest::multipart::Form::new()
-                    .part("metadata", reqwest::multipart::Part::text(metadata.to_string())
-                        .mime_str("application/json").unwrap())
-                    .part("file", reqwest::multipart::Part::bytes(data)
-                        .mime_str(file.mime_type.as_deref().unwrap_or("application/octet-stream")).unwrap());
+                    let boundary = format!("----{}", uuid::Uuid::new_v4());
+                    let mut body = Vec::new();
 
-                let res = this.state.client.post("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart")
-                    .bearer_auth(&token)
-                    .multipart(form)
-                    .send()
+                    body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+                    body.extend_from_slice(
+                        b"Content-Type: application/json; charset=UTF-8\r\n\r\n",
+                    );
+                    body.extend_from_slice(metadata.to_string().as_bytes());
+                    body.extend_from_slice(b"\r\n");
+
+                    body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+                    body.extend_from_slice(
+                        format!(
+                            "Content-Type: {}\r\n\r\n",
+                            file.mime_type
+                                .as_deref()
+                                .unwrap_or("application/octet-stream")
+                        )
+                        .as_bytes(),
+                    );
+                    body.extend_from_slice(&data);
+                    body.extend_from_slice(b"\r\n");
+
+                    body.extend_from_slice(format!("--{}--\r\n", boundary).as_bytes());
+
+                    let res = tokio::task::spawn_blocking(move || {
+                        minreq::post(
+                            "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",
+                        )
+                        .with_header("Authorization", format!("Bearer {}", token))
+                        .with_header(
+                            "Content-Type",
+                            format!("multipart/related; boundary={}", boundary),
+                        )
+                        .with_body(body)
+                        .send()
+                    })
                     .await
+                    .map_err(|e| LuaError::RuntimeError(e.to_string()))?
                     .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
-                Ok(res.status().is_success())
-            }
-        });
+                    Ok(res.status_code >= 200 && res.status_code < 300)
+                }
+            },
+        );
 
         methods.add_method("new_file", |_, this, name: String| {
             Ok(DriveFile {
@@ -309,16 +421,34 @@ async fn resolve_path(state: Arc<GmailState>, email: &str, path: &str) -> LuaRes
 
     for part in parts {
         let token = get_valid_token(state.clone(), email).await?;
-        let query = format!("name = '{}' and '{}' in parents and trashed = false", part.replace("'", "\\'"), current_id);
-        let res = state.client.get("https://www.googleapis.com/drive/v3/files")
-            .query(&[("q", query.as_str()), ("fields", "files(id)")])
-            .bearer_auth(token)
-            .send()
-            .await
-            .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+        let query = format!(
+            "name = '{}' and '{}' in parents and trashed = false",
+            part.replace("'", "\\'"),
+            current_id
+        );
+        let url = format!(
+            "https://www.googleapis.com/drive/v3/files?q={}&fields=files(id)",
+            urlencoding::encode(&query)
+        );
 
-        let json: serde_json::Value = res.json().await.map_err(|e| LuaError::RuntimeError(e.to_string()))?;
-        let files = json.get("files").and_then(|f| f.as_array()).ok_or_else(|| LuaError::RuntimeError("Invalid response from Drive API".into()))?;
+        let res = tokio::task::spawn_blocking(move || {
+            minreq::get(&url)
+                .with_header("Authorization", format!("Bearer {}", token))
+                .send()
+        })
+        .await
+        .map_err(|e| LuaError::RuntimeError(e.to_string()))?
+        .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+
+        let json: serde_json::Value = serde_json::from_str(
+            res.as_str()
+                .map_err(|e| LuaError::RuntimeError(e.to_string()))?,
+        )
+        .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+        let files = json
+            .get("files")
+            .and_then(|f| f.as_array())
+            .ok_or_else(|| LuaError::RuntimeError("Invalid response from Drive API".into()))?;
 
         if files.is_empty() {
             return Err(LuaError::RuntimeError(format!("Path not found: {}", path)));
@@ -326,7 +456,11 @@ async fn resolve_path(state: Arc<GmailState>, email: &str, path: &str) -> LuaRes
         if files.len() > 1 {
             return Err(LuaError::RuntimeError(format!("Ambiguous path: {}", path)));
         }
-        current_id = files[0].get("id").and_then(|v| v.as_str()).ok_or_else(|| LuaError::RuntimeError("Missing ID in response".into()))?.to_string();
+        current_id = files[0]
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| LuaError::RuntimeError("Missing ID in response".into()))?
+            .to_string();
     }
     Ok(current_id)
 }
@@ -355,12 +489,7 @@ pub fn register(lua: &Lua, _app_state: Arc<Mutex<AppState>>) -> LuaResult<()> {
                     .map_err(|e| LuaError::RuntimeError(e.to_string()))?
             };
 
-            let mut authorized = false;
-            if let Some(s) = scopes {
-                if s.contains("https://www.googleapis.com/auth/drive") {
-                    authorized = true;
-                }
-            }
+            let authorized = scopes.is_some_and(|s| s.contains("https://www.googleapis.com/auth/drive"));
 
             let res = lua.create_table()?;
             if authorized {
@@ -386,17 +515,20 @@ pub fn register(lua: &Lua, _app_state: Arc<Mutex<AppState>>) -> LuaResult<()> {
         }
     })?)?;
 
-    drive_mod.set("new_file", lua.create_function(|_, name: String| {
-        Ok(DriveFile {
-            id: None,
-            name,
-            mime_type: None,
-            path: None,
-            blob: None,
-            email: None,
-            state: None,
-        })
-    })?)?;
+    drive_mod.set(
+        "new_file",
+        lua.create_function(|_, name: String| {
+            Ok(DriveFile {
+                id: None,
+                name,
+                mime_type: None,
+                path: None,
+                blob: None,
+                email: None,
+                state: None,
+            })
+        })?,
+    )?;
 
     lua.globals().set("drive", drive_mod)?;
     Ok(())

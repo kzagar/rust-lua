@@ -116,7 +116,6 @@ async fn main() -> LuaResult<()> {
         config: None,
         gmail_state: gmail_state.clone(),
         drive_state: gmail_state,
-        gmail_state,
         engine_tx: None,
     }));
     register_modules(&lua, app_state.clone())?;
@@ -137,9 +136,7 @@ async fn main() -> LuaResult<()> {
         }
 
         let content = fs::read_to_string(&abs_path)
-            .map_err(|e| {
-              LuaError::RuntimeError(format!("Failed to read {}: {}", path_str, e))
-            })?;
+            .map_err(|e| LuaError::RuntimeError(format!("Failed to read {}: {}", path_str, e)))?;
 
         println!("--- Running Lua script: {} ---", path_str);
 

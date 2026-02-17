@@ -1,7 +1,7 @@
 use mlua::RegistryKey;
-use std::sync::Arc;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::sync::oneshot as tokio_oneshot;
 
 pub struct RestRequest {

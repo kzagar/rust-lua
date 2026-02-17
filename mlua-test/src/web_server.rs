@@ -12,9 +12,9 @@ use axum::{
 };
 use axum_extra::extract::Host;
 use axum_extra::extract::cookie::{Cookie, CookieJar};
-use rusqlite::params;
 use axum_server::tls_openssl::OpenSSLConfig as OpenSslConfig;
 use mlua::prelude::*;
+use rusqlite::params;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -105,7 +105,9 @@ pub async fn start(
     // Check if we should start server
     let should_run = {
         let state = app_state.lock().unwrap();
-        !state.routes.is_empty() || !state.static_routes.is_empty() || !state.reverse_proxies.is_empty()
+        !state.routes.is_empty()
+            || !state.static_routes.is_empty()
+            || !state.reverse_proxies.is_empty()
     };
 
     if should_run {
@@ -207,7 +209,8 @@ pub async fn start(
                 match listener_res {
                     Ok(listener) => {
                         let server_handle = tokio::spawn(async move {
-                            if let Err(e) = axum::serve(listener, router.into_make_service()).await {
+                            if let Err(e) = axum::serve(listener, router.into_make_service()).await
+                            {
                                 eprintln!("REST server error: {}", e);
                             }
                         });
@@ -318,6 +321,7 @@ async fn handle_google_callback(
         #[derive(serde::Deserialize)]
         struct TokenResponse {
             access_token: String,
+            _scope: Option<String>,
         }
 
         let token_res: TokenResponse = match serde_json::from_str(res.as_str().unwrap_or("{}")) {
@@ -331,7 +335,8 @@ async fn handle_google_callback(
             minreq::get("https://www.googleapis.com/oauth2/v3/userinfo")
                 .with_header("Authorization", format!("Bearer {}", access_token))
                 .send()
-        }).await;
+        })
+        .await;
 
         let email_json: serde_json::Value = match email_res {
             Ok(Ok(r)) => serde_json::from_str(r.as_str().unwrap_or("{}")).unwrap_or_default(),
@@ -389,10 +394,17 @@ async fn proxy_handler(
                     };
                     let gs = match gmail_state {
                         Some(s) => s,
-                        None => return (StatusCode::INTERNAL_SERVER_ERROR, "Gmail not initialized for auth").into_response(),
+                        None => {
+                            return (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "Gmail not initialized for auth",
+                            )
+                                .into_response();
+                        }
                     };
 
-                    let mut auth_url = url::Url::parse("https://accounts.google.com/o/oauth2/v2/auth").unwrap();
+                    let mut auth_url =
+                        url::Url::parse("https://accounts.google.com/o/oauth2/v2/auth").unwrap();
                     {
                         let mut query = auth_url.query_pairs_mut();
                         query.append_pair("client_id", &gs.config.client_id);
@@ -442,6 +454,7 @@ async fn check_authorization(
                 response_tx: tx,
             };
 
+            #[allow(clippy::collapsible_if)]
             if engine_tx.send(EngineRequest::ProxyAuth(req)).await.is_ok() {
                 if let Ok(allowed) = rx.await {
                     return allowed;
@@ -453,18 +466,16 @@ async fn check_authorization(
     // 2. Try SQLite
     let domain = domain.to_string();
     let email = email.to_string();
-    tokio::task::spawn_blocking(move || {
-        match rusqlite::Connection::open("server.db") {
-            Ok(conn) => {
-                let res: Result<i32, _> = conn.query_row(
-                    "SELECT 1 FROM authorized_users WHERE domain = ? AND email = ?",
-                    params![domain, email],
-                    |_| Ok(1),
-                );
-                res.is_ok()
-            }
-            Err(_) => false,
+    tokio::task::spawn_blocking(move || match rusqlite::Connection::open("server.db") {
+        Ok(conn) => {
+            let res: Result<i32, _> = conn.query_row(
+                "SELECT 1 FROM authorized_users WHERE domain = ? AND email = ?",
+                params![domain, email],
+                |_| Ok(1),
+            );
+            res.is_ok()
         }
+        Err(_) => false,
     })
     .await
     .unwrap_or(false)
@@ -472,22 +483,26 @@ async fn check_authorization(
 
 async fn forward_request(proxy: ReverseProxyInfo, req: Request) -> Response {
     let path = req.uri().path().to_string();
-    let query = req.uri().query().map(|q| format!("?{}", q)).unwrap_or_default();
+    let query = req
+        .uri()
+        .query()
+        .map(|q| format!("?{}", q))
+        .unwrap_or_default();
     let url = format!("{}{}{}", proxy.remote_base, path, query);
 
     let method = req.method().to_string();
 
     let mut headers = HashMap::new();
     for (name, value) in req.headers() {
-        if name == "host" { continue; }
+        if name == "host" {
+            continue;
+        }
         if let Ok(v) = value.to_str() {
             headers.insert(name.as_str().to_string(), v.to_string());
         }
     }
-    if let Some(host) = req.headers().get("host") {
-        if let Ok(h) = host.to_str() {
-            headers.insert("X-Forwarded-Host".to_string(), h.to_string());
-        }
+    if let Some(h) = req.headers().get("host").and_then(|v| v.to_str().ok()) {
+        headers.insert("X-Forwarded-Host".to_string(), h.to_string());
     }
 
     let body_bytes = match axum::body::to_bytes(req.into_body(), 10 * 1024 * 1024).await {
@@ -510,7 +525,9 @@ async fn forward_request(proxy: ReverseProxyInfo, req: Request) -> Response {
         }
         minreq_req = minreq_req.with_body(body_bytes);
         minreq_req.send().map_err(|e| e.to_string())
-    }).await {
+    })
+    .await
+    {
         Ok(Ok(r)) => r,
         _ => return (StatusCode::BAD_GATEWAY, "Proxy error").into_response(),
     };
@@ -520,7 +537,13 @@ async fn forward_request(proxy: ReverseProxyInfo, req: Request) -> Response {
         response_builder = response_builder.header(name, value);
     }
 
-    response_builder.body(Body::from(res.into_bytes())).unwrap_or_else(|_| {
-        (StatusCode::INTERNAL_SERVER_ERROR, "Failed to build response").into_response()
-    })
+    response_builder
+        .body(Body::from(res.into_bytes()))
+        .unwrap_or_else(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to build response",
+            )
+                .into_response()
+        })
 }

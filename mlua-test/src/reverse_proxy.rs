@@ -1,6 +1,6 @@
 use crate::types::{AppState, ReverseProxyInfo};
 use mlua::prelude::*;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use std::sync::{Arc, Mutex};
 
 pub struct ProxyBuilder {
@@ -93,7 +93,8 @@ pub fn register(lua: &Lua, app_state: Arc<Mutex<AppState>>) -> LuaResult<()> {
     )?;
 
     // Setup database for domain management
-    let db_conn = Connection::open("server.db").map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+    let db_conn =
+        Connection::open("server.db").map_err(|e| LuaError::RuntimeError(e.to_string()))?;
     db_conn
         .execute(
             "CREATE TABLE IF NOT EXISTS authorized_users (

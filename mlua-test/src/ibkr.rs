@@ -1,9 +1,9 @@
 use chrono::Utc;
-use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use mlua::prelude::*;
 use mlua::serde::LuaSerdeExt;
-use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey, LineEnding};
 use rsa::RsaPrivateKey;
+use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey, LineEnding};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
@@ -75,7 +75,9 @@ impl IbkrState {
                 .with_header("Content-Type", "application/x-www-form-urlencoded")
                 .with_body(body)
                 .send()
-        }).await.map_err(|e| LuaError::RuntimeError(e.to_string()))?
+        })
+        .await
+        .map_err(|e| LuaError::RuntimeError(e.to_string()))?
         .map_err(|e| LuaError::RuntimeError(format!("Token request failed: {}", e)))?;
 
         if resp.status_code < 200 || resp.status_code >= 300 {
@@ -93,8 +95,10 @@ impl IbkrState {
         }
 
         let token_resp: TokenResponse = serde_json::from_str(
-            resp.as_str().map_err(|e| LuaError::RuntimeError(e.to_string()))?
-        ).map_err(|e| LuaError::RuntimeError(format!("Failed to parse token response: {}", e)))?;
+            resp.as_str()
+                .map_err(|e| LuaError::RuntimeError(e.to_string()))?,
+        )
+        .map_err(|e| LuaError::RuntimeError(format!("Failed to parse token response: {}", e)))?;
 
         self.access_token = Some(token_resp.access_token.clone());
         self.token_expiry = Some(Instant::now() + Duration::from_secs(token_resp.expires_in));
@@ -128,7 +132,9 @@ impl IbkrState {
             }
 
             req.send().map_err(|e| e.to_string())
-        }).await.map_err(|e| LuaError::RuntimeError(e.to_string()))?
+        })
+        .await
+        .map_err(|e| LuaError::RuntimeError(e.to_string()))?
         .map_err(LuaError::RuntimeError)?;
 
         if resp.status_code < 200 || resp.status_code >= 300 {
@@ -141,8 +147,10 @@ impl IbkrState {
         }
 
         serde_json::from_str(
-            resp.as_str().map_err(|e| LuaError::RuntimeError(e.to_string()))?
-        ).map_err(|e| LuaError::RuntimeError(format!("Failed to parse API response: {}", e)))
+            resp.as_str()
+                .map_err(|e| LuaError::RuntimeError(e.to_string()))?,
+        )
+        .map_err(|e| LuaError::RuntimeError(format!("Failed to parse API response: {}", e)))
     }
 
     async fn ensure_account_id(&mut self) -> LuaResult<String> {
@@ -180,7 +188,8 @@ impl IbkrState {
             "/iserver/secdef/search?symbol={}&name=true&secType=STK",
             symbol
         );
-        let results: serde_json::Value = self.api_request("GET".to_string(), endpoint, None).await?;
+        let results: serde_json::Value =
+            self.api_request("GET".to_string(), endpoint, None).await?;
 
         let conid = results
             .as_array()
@@ -198,7 +207,9 @@ pub fn register(lua: &Lua) -> LuaResult<()> {
     let client_id = match env::var("IBKR_CLIENT_ID") {
         Ok(val) => val,
         Err(_) => {
-            println!("Warning: IBKR_CLIENT_ID environment variable is missing. IBKR support disabled.");
+            println!(
+                "Warning: IBKR_CLIENT_ID environment variable is missing. IBKR support disabled."
+            );
             return Ok(());
         }
     };
@@ -236,10 +247,7 @@ pub fn register(lua: &Lua) -> LuaResult<()> {
             .to_public_key_pem(LineEnding::LF)
             .map_err(|e| LuaError::RuntimeError(format!("Failed to encode public key: {}", e)))?;
 
-        let entry = format!(
-            "\nIBKR_PRIVATE_KEY=\"{}\"\n",
-            priv_pem.replace("\n", "\\n")
-        );
+        let entry = format!("\nIBKR_PRIVATE_KEY=\"{}\"\n", priv_pem.replace("\n", "\\n"));
         fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -291,7 +299,8 @@ pub fn register(lua: &Lua) -> LuaResult<()> {
                 let mut s = state.lock().await;
                 let conid = s.get_conid(&symbol).await?;
                 let endpoint = format!("/iserver/marketdata/snapshot?conids={}&fields=31", conid);
-                let resp: serde_json::Value = s.api_request("GET".to_string(), endpoint, None).await?;
+                let resp: serde_json::Value =
+                    s.api_request("GET".to_string(), endpoint, None).await?;
 
                 let last_price = resp
                     .as_array()
@@ -304,7 +313,9 @@ pub fn register(lua: &Lua) -> LuaResult<()> {
                             v.as_f64()
                         }
                     })
-                    .ok_or_else(|| LuaError::RuntimeError("Price data not available".to_string()))?;
+                    .ok_or_else(|| {
+                        LuaError::RuntimeError("Price data not available".to_string())
+                    })?;
 
                 Ok(last_price)
             }
@@ -341,7 +352,9 @@ pub fn register(lua: &Lua) -> LuaResult<()> {
 
             let endpoint = format!("/iserver/account/{}/orders", account_id);
             let body = serde_json::json!([order]);
-            let resp: serde_json::Value = s.api_request("POST".to_string(), endpoint, Some(body)).await?;
+            let resp: serde_json::Value = s
+                .api_request("POST".to_string(), endpoint, Some(body))
+                .await?;
 
             lua.to_value(&resp)
         }
@@ -401,7 +414,17 @@ pub fn register(lua: &Lua) -> LuaResult<()> {
         "market_sell",
         lua.create_async_function(move |lua, (symbol, qty): (String, f64)| {
             let pc = pc_c.clone();
-            async move { pc(lua, symbol, qty, "MKT".to_string(), "SELL".to_string(), None).await }
+            async move {
+                pc(
+                    lua,
+                    symbol,
+                    qty,
+                    "MKT".to_string(),
+                    "SELL".to_string(),
+                    None,
+                )
+                .await
+            }
         })?,
     )?;
 
@@ -428,8 +451,13 @@ pub fn register(lua: &Lua) -> LuaResult<()> {
             let state = state_clone.clone();
             async move {
                 let mut s = state.lock().await;
-                let resp: serde_json::Value =
-                    s.api_request("GET".to_string(), "/iserver/account/orders".to_string(), None).await?;
+                let resp: serde_json::Value = s
+                    .api_request(
+                        "GET".to_string(),
+                        "/iserver/account/orders".to_string(),
+                        None,
+                    )
+                    .await?;
                 lua.to_value(&resp)
             }
         })?,
@@ -444,13 +472,17 @@ pub fn register(lua: &Lua) -> LuaResult<()> {
                 let mut s = state.lock().await;
                 let account_id = s.ensure_account_id().await?;
                 let endpoint = format!("/portfolio/{}/positions", account_id);
-                let resp: serde_json::Value = s.api_request("GET".to_string(), endpoint, None).await?;
+                let resp: serde_json::Value =
+                    s.api_request("GET".to_string(), endpoint, None).await?;
 
                 let positions = lua.create_table()?;
                 if let Some(arr) = resp.as_array() {
                     for (i, pos) in arr.iter().enumerate() {
                         let p_table = lua.create_table()?;
-                        let ticker = pos.get("ticker").and_then(|v| v.as_str()).unwrap_or("UNKNOWN");
+                        let ticker = pos
+                            .get("ticker")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("UNKNOWN");
                         let qty = pos.get("position").and_then(|v| v.as_f64()).unwrap_or(0.0);
                         p_table.set("ticker", ticker)?;
                         p_table.set("quantity", qty)?;

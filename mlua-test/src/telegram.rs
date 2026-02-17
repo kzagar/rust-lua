@@ -55,14 +55,17 @@ pub fn register(lua: &Lua, app_state: Arc<Mutex<AppState>>) -> LuaResult<()> {
             let body = serde_json::to_string(&serde_json::json!({
                 "chat_id": chat_id_val,
                 "text": text
-            })).map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+            }))
+            .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
             let res = tokio::task::spawn_blocking(move || {
                 minreq::post(&url)
                     .with_header("Content-Type", "application/json")
                     .with_body(body)
                     .send()
-            }).await.map_err(|e| LuaError::RuntimeError(e.to_string()))?
+            })
+            .await
+            .map_err(|e| LuaError::RuntimeError(e.to_string()))?
             .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
             if res.status_code < 200 || res.status_code >= 300 {
@@ -106,21 +109,20 @@ pub async fn start(
 
         loop {
             let current_url = format!("{}?offset={}&timeout=30", url, offset);
-            let res = tokio::task::spawn_blocking(move || {
-                minreq::get(current_url).send()
-            }).await;
+            let res = tokio::task::spawn_blocking(move || minreq::get(current_url).send()).await;
 
             match res {
                 Ok(Ok(resp)) => {
                     if resp.status_code >= 200 && resp.status_code < 300 {
-                        let json: JsonValue = match serde_json::from_str(resp.as_str().unwrap_or("{}")) {
-                            Ok(j) => j,
-                            Err(e) => {
-                                eprintln!("Failed to parse telegram updates: {}", e);
-                                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                                continue;
-                            }
-                        };
+                        let json: JsonValue =
+                            match serde_json::from_str(resp.as_str().unwrap_or("{}")) {
+                                Ok(j) => j,
+                                Err(e) => {
+                                    eprintln!("Failed to parse telegram updates: {}", e);
+                                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                                    continue;
+                                }
+                            };
 
                         if let Some(updates) = json.get("result").and_then(|r| r.as_array()) {
                             for update in updates {
@@ -139,7 +141,10 @@ pub async fn start(
                             }
                         }
                     } else {
-                        eprintln!("Telegram getUpdates failed with status: {}", resp.status_code);
+                        eprintln!(
+                            "Telegram getUpdates failed with status: {}",
+                            resp.status_code
+                        );
                         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                     }
                 }
