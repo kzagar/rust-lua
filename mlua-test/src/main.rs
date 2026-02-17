@@ -1,5 +1,8 @@
 mod cron;
+mod gmail;
+mod ibkr;
 mod sql;
+mod telegram;
 mod types;
 mod util;
 mod watcher;
@@ -10,6 +13,7 @@ use crate::types::{AppState, EngineRequest};
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use mlua::prelude::*;
+use mlua::serde::LuaSerdeExt;
 use std::fs;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -19,9 +23,12 @@ use uuid::Uuid;
 fn register_modules(lua: &Lua, app_state: Arc<Mutex<AppState>>) -> LuaResult<()> {
     sql::register(lua)?;
     util::register(lua)?;
+    ibkr::register(lua)?;
     web_client::register(lua)?;
     web_server::register(lua, app_state.clone())?;
     cron::register(lua, app_state.clone())?;
+    telegram::register(lua, app_state.clone())?;
+    gmail::register(lua, app_state.clone())?;
 
     // Help with random strings
     let uuid_func = lua.create_function(|_, ()| Ok(Uuid::new_v4().to_string()))?;
@@ -68,11 +75,31 @@ async fn main() -> LuaResult<()> {
     let _debouncer = watcher::setup_watcher(&abs_path, tx)?;
 
     let lua = Lua::new();
+    let gmail_state = gmail::init_gmail_state().await.ok();
+
+    // Cleanup attachments at startup
+    if let Some(gs) = &gmail_state {
+        let dir = &gs.attachment_manager.dir;
+        if dir.exists() {
+            println!("Cleaning up attachment directory: {:?}", dir);
+            if let Ok(entries) = fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() {
+                        let _ = fs::remove_file(path);
+                    }
+                }
+            }
+        }
+    }
+
     let app_state = Arc::new(Mutex::new(AppState {
         routes: Vec::new(),
         static_routes: Vec::new(),
         cron_jobs: Vec::new(),
+        telegram_handler: None,
         config: None,
+        gmail_state,
     }));
     register_modules(&lua, app_state.clone())?;
 
@@ -85,6 +112,7 @@ async fn main() -> LuaResult<()> {
             state.routes.clear();
             state.static_routes.clear();
             state.cron_jobs.clear();
+            state.telegram_handler = None;
             state.config = None;
         }
 
@@ -104,10 +132,13 @@ async fn main() -> LuaResult<()> {
                 } else {
                     println!("--- Lua script finished ---");
 
-                    // Check if we should start server/cron logic
+                    // Check if we should start server/cron/telegram logic
                     let should_run = {
                         let state = app_state.lock().unwrap();
-                        !state.routes.is_empty() || !state.static_routes.is_empty() || !state.cron_jobs.is_empty()
+                        !state.routes.is_empty()
+                            || !state.static_routes.is_empty()
+                            || !state.cron_jobs.is_empty()
+                            || state.telegram_handler.is_some()
                     };
 
                     if should_run {
@@ -115,18 +146,26 @@ async fn main() -> LuaResult<()> {
                         let (tx_engine, mut req_rx) = mpsc::channel::<EngineRequest>(100);
 
                         // Start Web Server
-                        let server_guard_opt = web_server::start(app_state.clone(), tx_engine.clone(), abs_path.clone()).await;
+                        let server_guard_opt =
+                            web_server::start(app_state.clone(), tx_engine.clone(), abs_path.clone())
+                                .await;
 
                         // Start Cron Scheduler
                         let sched_opt = cron::start(app_state.clone(), tx_engine.clone()).await;
 
-                        if server_guard_opt.is_some() || sched_opt.is_some() {
-                             if server_guard_opt.is_some() {
-                                 println!("Web Server running. Waiting for changes...");
-                             }
-                             if sched_opt.is_some() {
-                                 println!("Cron Scheduler running. Waiting for changes...");
-                             }
+                        // Start Telegram Bot
+                        let tg_opt = telegram::start(app_state.clone(), tx_engine.clone()).await;
+
+                        if server_guard_opt.is_some() || sched_opt.is_some() || tg_opt.is_some() {
+                            if server_guard_opt.is_some() {
+                                println!("Web Server running. Waiting for changes...");
+                            }
+                            if sched_opt.is_some() {
+                                println!("Cron Scheduler running. Waiting for changes...");
+                            }
+                            if tg_opt.is_some() {
+                                println!("Telegram Bot running. Waiting for changes...");
+                            }
 
                             let mut pending_requests: FuturesUnordered<Pin<Box<dyn std::future::Future<Output = ()>>>> = FuturesUnordered::new();
 
@@ -182,10 +221,13 @@ async fn main() -> LuaResult<()> {
                                                 let func_res: LuaResult<LuaFunction> = {
                                                     let state = app_state.lock().unwrap();
                                                     if id >= state.cron_jobs.len() {
-                                                         Err(LuaError::RuntimeError("Invalid cron callback ID".into()))
+                                                        Err(LuaError::RuntimeError(
+                                                            "Invalid cron callback ID".into(),
+                                                        ))
                                                     } else {
                                                         let job = &state.cron_jobs[id];
-                                                        let func: LuaFunction = lua.registry_value(&job.callback_key)?;
+                                                        let func: LuaFunction =
+                                                            lua.registry_value(&job.callback_key)?;
                                                         Ok(func)
                                                     }
                                                 };
@@ -194,13 +236,56 @@ async fn main() -> LuaResult<()> {
                                                     let _lua_ref = &lua;
                                                     let fut = async move {
                                                         // Call Lua function with no arguments
-                                                        if let Err(e) = func.call_async::<()>(()).await {
-                                                            eprintln!("Error executing cron job: {}", e);
+                                                        if let Err(e) =
+                                                            func.call_async::<()>(()).await
+                                                        {
+                                                            eprintln!(
+                                                                "Error executing cron job: {}",
+                                                                e
+                                                            );
                                                         }
                                                     };
                                                     pending_requests.push(Box::pin(fut));
                                                 } else {
-                                                    eprintln!("Failed to retrieve cron callback function");
+                                                    eprintln!(
+                                                        "Failed to retrieve cron callback function"
+                                                    );
+                                                }
+                                            }
+                                            EngineRequest::TelegramUpdate(update) => {
+                                                // Handle Telegram update
+                                                let func_res: LuaResult<LuaFunction> = {
+                                                    let state = app_state.lock().unwrap();
+                                                    if let Some(ref key) = state.telegram_handler {
+                                                        lua.registry_value(key)
+                                                    } else {
+                                                        Err(LuaError::RuntimeError(
+                                                            "No telegram handler registered"
+                                                                .into(),
+                                                        ))
+                                                    }
+                                                };
+
+                                                if let Ok(func) = func_res {
+                                                    let lua_ref = &lua;
+                                                    let fut = async move {
+                                                        let update_val = lua_ref
+                                                            .to_value(&update)
+                                                            .unwrap_or(LuaValue::Nil);
+                                                        if let Err(e) =
+                                                            func.call_async::<()>(update_val).await
+                                                        {
+                                                            eprintln!(
+                                                                "Error executing telegram handler: {}",
+                                                                e
+                                                            );
+                                                        }
+                                                    };
+                                                    pending_requests.push(Box::pin(fut));
+                                                } else {
+                                                    eprintln!(
+                                                        "Failed to retrieve telegram callback function"
+                                                    );
                                                 }
                                             }
                                         }

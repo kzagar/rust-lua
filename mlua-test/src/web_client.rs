@@ -72,10 +72,10 @@ pub fn register(lua: &Lua) -> LuaResult<()> {
         "new",
         lua.create_function(|_, options: Option<LuaTable>| {
             let mut builder = Client::builder();
-            if let Some(opts) = options {
-                if opts.get::<bool>("insecure").unwrap_or(false) {
-                    builder = builder.danger_accept_invalid_certs(true);
-                }
+            let insecure =
+                options.is_some_and(|opts| opts.get::<bool>("insecure").unwrap_or(false));
+            if insecure {
+                builder = builder.danger_accept_invalid_certs(true);
             }
             Ok(HttpClient {
                 client: builder
