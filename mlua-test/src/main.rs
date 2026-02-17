@@ -1,6 +1,7 @@
 mod cron;
 mod sql;
 mod types;
+mod util;
 mod watcher;
 mod web_client;
 mod web_server;
@@ -17,6 +18,7 @@ use uuid::Uuid;
 
 fn register_modules(lua: &Lua, app_state: Arc<Mutex<AppState>>) -> LuaResult<()> {
     sql::register(lua)?;
+    util::register(lua)?;
     web_client::register(lua)?;
     web_server::register(lua, app_state.clone())?;
     cron::register(lua, app_state.clone())?;
@@ -36,7 +38,8 @@ fn register_modules(lua: &Lua, app_state: Arc<Mutex<AppState>>) -> LuaResult<()>
     let now_func = lua.create_function(|_, ()| {
         use std::time::{SystemTime, UNIX_EPOCH};
         let start = SystemTime::now();
-        let since_the_epoch = start.duration_since(UNIX_EPOCH)
+        let since_the_epoch = start
+            .duration_since(UNIX_EPOCH)
             .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
         Ok(since_the_epoch.as_secs_f64())
     })?;
