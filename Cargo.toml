@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 mlua = { version = "0.11.6", features = ["async", "lua55", "vendored", "serialize"] }
-tokio = { version = "1.49.0", features = ["rt", "macros", "time", "sync", "signal"] }
+tokio = { version = "1.49.0", features = ["rt", "macros", "time", "sync", "signal", "process"] }
 rusqlite = { version = "0.33.0", features = ["chrono"] }
 chrono = { version = "0.4.39", features = ["serde", "clock"] }
 uuid = { version = "1.21.0", features = ["v4"] }
