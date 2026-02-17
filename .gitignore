@@ -10,7 +10,8 @@ testes/time.txt
 testes/time-debug.txt
 
 testes/libs/all
-
+.venv
+.env
 temp
 lua
 /target
