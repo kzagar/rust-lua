@@ -1,0 +1,13 @@
+[project]
+name = "mlua-test-concurrency"
+version = "0.1.0"
+description = "Concurrency test for mlua-test"
+dependencies = [
+    "httpx",
+    "numpy",
+    "matplotlib",
+    "tabulate",
+]
+
+[tool.uv]
+managed = true

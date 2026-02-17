@@ -1,3 +1,11 @@
+# /// script
+# dependencies = [
+#   "httpx",
+#   "numpy",
+#   "matplotlib",
+#   "tabulate",
+# ]
+# ///
 import asyncio
 import httpx
 import time
@@ -57,12 +65,8 @@ async def run_test(n):
             if not success:
                 errors += 1
 
-        # Cancel remaining wait tasks
-        for t in wait_tasks:
-            if not t.done():
-                t.cancel()
-
-        # Wait a bit for cancellations to settle
+        # Wait for all remaining wait tasks to complete naturally
+        print(f"Waiting for remaining {n-1} wait calls to complete...")
         if wait_tasks:
             await asyncio.gather(*wait_tasks, return_exceptions=True)
 
@@ -126,7 +130,7 @@ async def main():
     data_to_plot = [res["latencies"] for res in results]
     labels = [f"N={n}" for n in N_VALUES]
 
-    plt.boxplot(data_to_plot, labels=labels, showfliers=False)
+    plt.boxplot(data_to_plot, tick_labels=labels, showfliers=False)
     plt.title(f"Query Latency Distribution vs Number of Concurrent Waits (Wait={WAIT_SECONDS}s)")
     plt.xlabel("Number of concurrent /wait requests (N)")
     plt.ylabel("Latency (ms)")

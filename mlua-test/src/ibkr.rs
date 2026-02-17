@@ -198,8 +198,8 @@ pub fn register(lua: &Lua) -> LuaResult<()> {
     let client_id = match env::var("IBKR_CLIENT_ID") {
         Ok(val) => val,
         Err(_) => {
-            eprintln!("Error: IBKR_CLIENT_ID environment variable is missing.");
-            std::process::exit(1);
+            println!("Warning: IBKR_CLIENT_ID environment variable is missing. IBKR support disabled.");
+            return Ok(());
         }
     };
 
