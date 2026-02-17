@@ -4,7 +4,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 pub struct HttpClient {
+    #[allow(dead_code)]
     insecure: bool,
+    agent: Arc<ureq::Agent>,
 }
 
 impl LuaUserData for HttpClient {
@@ -12,7 +14,7 @@ impl LuaUserData for HttpClient {
         methods.add_async_method(
             "request_uri",
             |lua, client, (url, options): (String, Option<LuaTable>)| {
-                let insecure = client.insecure;
+                let agent = client.agent.clone();
                 let lua_ref = lua.clone();
                 async move {
                     let mut method = "GET".to_string();
@@ -33,17 +35,6 @@ impl LuaUserData for HttpClient {
                     }
 
                     let res = tokio::task::spawn_blocking(move || {
-                        let mut agent_builder = ureq::AgentBuilder::new();
-                        if insecure {
-                            let connector = native_tls::TlsConnector::builder()
-                                .danger_accept_invalid_certs(true)
-                                .danger_accept_invalid_hostnames(true)
-                                .build()
-                                .map_err(|e| e.to_string())?;
-                            agent_builder = agent_builder.tls_connector(Arc::new(connector));
-                        }
-                        let agent = agent_builder.build();
-
                         let mut request = agent.request(&method, &url);
 
                         for (k, v) in headers {
@@ -92,10 +83,29 @@ pub fn register(lua: &Lua) -> LuaResult<()> {
         "new",
         lua.create_function(|_, options: Option<LuaTable>| {
             let mut insecure = false;
+            let mut user_agent = None;
             if let Some(opts) = options {
                 insecure = opts.get::<bool>("insecure").unwrap_or(false);
+                user_agent = opts.get::<Option<String>>("user_agent")?;
             }
-            Ok(HttpClient { insecure })
+
+            let mut agent_builder = ureq::AgentBuilder::new();
+            if insecure {
+                let connector = native_tls::TlsConnector::builder()
+                    .danger_accept_invalid_certs(true)
+                    .danger_accept_invalid_hostnames(true)
+                    .build()
+                    .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+                agent_builder = agent_builder.tls_connector(Arc::new(connector));
+            }
+            if let Some(ua) = user_agent {
+                agent_builder = agent_builder.user_agent(&ua);
+            }
+
+            Ok(HttpClient {
+                insecure,
+                agent: Arc::new(agent_builder.build()),
+            })
         })?,
     )?;
     lua.globals().set("http", http)?;
