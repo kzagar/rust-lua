@@ -4,6 +4,7 @@ mod ibkr;
 mod sql;
 mod telegram;
 mod types;
+mod util;
 mod watcher;
 mod web_client;
 mod web_server;
@@ -21,6 +22,7 @@ use uuid::Uuid;
 
 fn register_modules(lua: &Lua, app_state: Arc<Mutex<AppState>>) -> LuaResult<()> {
     sql::register(lua)?;
+    util::register(lua)?;
     ibkr::register(lua)?;
     web_client::register(lua)?;
     web_server::register(lua, app_state.clone())?;
