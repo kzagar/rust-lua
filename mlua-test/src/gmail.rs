@@ -3,10 +3,12 @@ use base64::Engine;
 use mlua::prelude::*;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Deserialize;
+use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use chrono::{DateTime, Utc};
 
 pub struct GmailConfig {
     pub client_id: String,
@@ -18,6 +20,7 @@ pub struct GmailState {
     pub config: GmailConfig,
     pub db_conn: Arc<Mutex<Connection>>,
     pub attachment_manager: Arc<AttachmentManager>,
+    pub client: Client,
 }
 
 pub struct AttachmentManager {
@@ -61,7 +64,7 @@ pub struct Mailbox {
 
 impl LuaUserData for Mailbox {
     fn add_methods<M: LuaUserDataMethods<Self>>(methods: &mut M) {
-        methods.add_async_method("search", |lua, mailbox, options: LuaTable| async move {
+        methods.add_async_method("search", |lua: Lua, mailbox, options: LuaTable| async move {
             let mut query = String::new();
             if let Some(after) = options.get::<Option<i64>>("after")? {
                 query.push_str(&format!("after:{} ", after));
@@ -153,11 +156,17 @@ impl LuaUserData for Mailbox {
                 let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(mime);
 
                 let token = get_valid_token(mailbox.state.clone(), &mailbox.email).await?;
-                let body_json = serde_json::to_string(&serde_json::json!({
-                    "message": {
-                        "raw": raw
-                    }
-                })).map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+                let res = mailbox.state.client
+                    .post("https://gmail.googleapis.com/gmail/v1/users/me/drafts")
+                    .bearer_auth(token)
+                    .json(&serde_json::json!({
+                        "message": {
+                            "raw": raw
+                        }
+                    }))
+                    .send()
+                    .await
+                    .map_err(|e: reqwest::Error| LuaError::RuntimeError(e.to_string()))?;
 
                 let res = tokio::task::spawn_blocking(move || {
                     minreq::post("https://gmail.googleapis.com/gmail/v1/users/me/drafts")
@@ -316,7 +325,7 @@ pub struct Message {
 
 impl LuaUserData for Message {
     fn add_methods<M: LuaUserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("get_info", |lua, this, ()| {
+        methods.add_method("get_info", |lua: &Lua, this, ()| {
             let info = lua.create_table()?;
             info.set("id", this.id.clone())?;
             info.set(
@@ -360,7 +369,7 @@ impl LuaUserData for Message {
             Ok(info)
         });
 
-        methods.add_async_method("download_attachments", |lua, this, ()| async move {
+        methods.add_async_method("download_attachments", |lua: Lua, this, ()| async move {
             let token = get_valid_token(this.mailbox.state.clone(), &this.mailbox.email).await?;
             let mut paths: Vec<PathBuf> = Vec::new();
 
@@ -499,6 +508,7 @@ struct TokenResponse {
     access_token: String,
     refresh_token: Option<String>,
     expires_in: Option<i64>,
+    scope: Option<String>,
 }
 
 async fn get_valid_token(state: Arc<GmailState>, email: &str) -> LuaResult<String> {
@@ -521,7 +531,7 @@ async fn get_valid_token(state: Arc<GmailState>, email: &str) -> LuaResult<Strin
     };
 
     let is_expired = expires_at
-        .map(|exp| exp < chrono::Utc::now() + chrono::Duration::try_seconds(60).unwrap())
+        .map(|exp| exp < Utc::now() + chrono::Duration::try_seconds(60).unwrap())
         .unwrap_or(false);
 
     if is_expired {
@@ -596,7 +606,7 @@ pub fn register(lua: &Lua, app_state: Arc<Mutex<AppState>>) -> LuaResult<()> {
             };
 
             let res = lua.create_table()?;
-            if row.is_some() {
+            if authorized {
                 res.set("status", "authorized")?;
                 res.set("mailbox", Mailbox { email, state: gmail_state })?;
             } else {
@@ -606,7 +616,7 @@ pub fn register(lua: &Lua, app_state: Arc<Mutex<AppState>>) -> LuaResult<()> {
                     query.append_pair("client_id", &gmail_state.config.client_id);
                     query.append_pair("redirect_uri", &gmail_state.config.redirect_uri);
                     query.append_pair("response_type", "code");
-                    query.append_pair("scope", "https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/gmail.compose");
+                    query.append_pair("scope", "https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/gmail.compose https://www.googleapis.com/auth/drive");
                     query.append_pair("access_type", "offline");
                     query.append_pair("prompt", "consent");
                     query.append_pair("state", &email);
@@ -717,5 +727,6 @@ pub async fn init_gmail_state() -> Result<Arc<GmailState>, Box<dyn std::error::E
         config,
         db_conn,
         attachment_manager: Arc::new(AttachmentManager::new(attachment_dir)),
+        client: Client::new(),
     }))
 }

@@ -60,5 +60,6 @@ pub struct AppState {
     pub telegram_handler: Option<RegistryKey>,
     pub config: Option<ServerConfig>,
     pub gmail_state: Option<std::sync::Arc<crate::gmail::GmailState>>,
+    pub drive_state: Option<std::sync::Arc<crate::gmail::GmailState>>,
     pub engine_tx: Option<tokio::sync::mpsc::Sender<EngineRequest>>,
 }

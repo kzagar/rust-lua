@@ -1,4 +1,5 @@
 mod cron;
+mod drive;
 mod gmail;
 mod ibkr;
 mod reverse_proxy;
@@ -30,6 +31,7 @@ fn register_modules(lua: &Lua, app_state: Arc<Mutex<AppState>>) -> LuaResult<()>
     cron::register(lua, app_state.clone())?;
     telegram::register(lua, app_state.clone())?;
     gmail::register(lua, app_state.clone())?;
+    drive::register(lua, app_state.clone())?;
     reverse_proxy::register(lua, app_state.clone())?;
 
     // Help with random strings
@@ -112,6 +114,8 @@ async fn main() -> LuaResult<()> {
         reverse_proxies: Vec::new(),
         telegram_handler: None,
         config: None,
+        gmail_state: gmail_state.clone(),
+        drive_state: gmail_state,
         gmail_state,
         engine_tx: None,
     }));
@@ -133,7 +137,9 @@ async fn main() -> LuaResult<()> {
         }
 
         let content = fs::read_to_string(&abs_path)
-            .map_err(|e| LuaError::RuntimeError(format!("Failed to read {}: {}", path_str, e)))?;
+            .map_err(|e| {
+              LuaError::RuntimeError(format!("Failed to read {}: {}", path_str, e))
+            })?;
 
         println!("--- Running Lua script: {} ---", path_str);
 
