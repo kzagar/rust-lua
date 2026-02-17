@@ -1,7 +1,9 @@
 mod cron;
 mod drive;
+mod gcp_logging;
 mod gmail;
 mod ibkr;
+mod logger;
 mod reverse_proxy;
 mod sql;
 mod telegram;
@@ -61,6 +63,8 @@ fn register_modules(lua: &Lua, app_state: Arc<Mutex<AppState>>) -> LuaResult<()>
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> LuaResult<()> {
+    logger::SimpleLogger::init();
+
     let args: Vec<String> = std::env::args().collect();
     let path_str = if args.len() > 1 {
         &args[1]
