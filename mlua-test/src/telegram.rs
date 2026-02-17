@@ -1,6 +1,5 @@
 use crate::types::{AppState, EngineRequest};
 use mlua::prelude::*;
-use reqwest::Client;
 use serde_json::Value as JsonValue;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::Sender;
@@ -52,20 +51,22 @@ pub fn register(lua: &Lua, app_state: Arc<Mutex<AppState>>) -> LuaResult<()> {
                 }
             };
 
-            let client = Client::new();
             let url = format!("https://api.telegram.org/bot{}/sendMessage", token);
-            let res = client
-                .post(&url)
-                .json(&serde_json::json!({
-                    "chat_id": chat_id_val,
-                    "text": text
-                }))
-                .send()
-                .await
-                .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+            let body = serde_json::to_string(&serde_json::json!({
+                "chat_id": chat_id_val,
+                "text": text
+            })).map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
-            if !res.status().is_success() {
-                let body = res.text().await.unwrap_or_default();
+            let res = tokio::task::spawn_blocking(move || {
+                minreq::post(&url)
+                    .with_header("Content-Type", "application/json")
+                    .with_body(body)
+                    .send()
+            }).await.map_err(|e| LuaError::RuntimeError(e.to_string()))?
+            .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+
+            if res.status_code < 200 || res.status_code >= 300 {
+                let body = res.as_str().unwrap_or_default();
                 return Ok((false, Some(format!("Telegram API error: {}", body))));
             }
 
@@ -100,20 +101,19 @@ pub async fn start(
 
     Some(TelegramBotGuard(tokio::spawn(async move {
         println!("Telegram bot long polling started.");
-        let client = Client::new();
         let mut offset = 0;
         let url = format!("https://api.telegram.org/bot{}/getUpdates", token);
 
         loop {
-            let res = client
-                .get(format!("{}?offset={}&timeout=30", url, offset))
-                .send()
-                .await;
+            let current_url = format!("{}?offset={}&timeout=30", url, offset);
+            let res = tokio::task::spawn_blocking(move || {
+                minreq::get(current_url).send()
+            }).await;
 
             match res {
-                Ok(resp) => {
-                    if resp.status().is_success() {
-                        let json: JsonValue = match resp.json().await {
+                Ok(Ok(resp)) => {
+                    if resp.status_code >= 200 && resp.status_code < 300 {
+                        let json: JsonValue = match serde_json::from_str(resp.as_str().unwrap_or("{}")) {
                             Ok(j) => j,
                             Err(e) => {
                                 eprintln!("Failed to parse telegram updates: {}", e);
@@ -139,12 +139,12 @@ pub async fn start(
                             }
                         }
                     } else {
-                        eprintln!("Telegram getUpdates failed with status: {}", resp.status());
+                        eprintln!("Telegram getUpdates failed with status: {}", resp.status_code);
                         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                     }
                 }
-                Err(e) => {
-                    eprintln!("Telegram getUpdates request error: {}", e);
+                _ => {
+                    eprintln!("Telegram getUpdates request error");
                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                 }
             }
