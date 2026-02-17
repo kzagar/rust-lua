@@ -1,8 +1,70 @@
 use hmac::{Hmac, Mac};
 use mlua::prelude::*;
 use sha2::Sha256;
+use std::env;
+use std::fs;
+use std::path::Path;
 
 type HmacSha256 = Hmac<Sha256>;
+
+pub fn load_secrets() {
+    let mut files_to_check = Vec::new();
+
+    // Check ~/.secrets
+    if let Some(mut path) = dirs::home_dir() {
+        path.push(".secrets");
+        if path.exists() && path.is_file() {
+            files_to_check.push(path);
+        }
+    }
+
+    // Check .secrets in current directory (overrides home logic if we want, but usually we just load both.
+    // Last one loaded wins if we overwrite, or first one wins if we don't overwrite.
+    // Let's make CWD win (so load Home first, then CWD).
+    // And let's PREFER env vars already set (so don't overwrite if set).
+    let cwd_secrets = Path::new(".secrets");
+    if cwd_secrets.exists() && cwd_secrets.is_file() {
+        // Avoid duplication if CWD is home
+        if !files_to_check.contains(&cwd_secrets.to_path_buf()) {
+            files_to_check.push(cwd_secrets.to_path_buf());
+        }
+    }
+
+    for path in files_to_check {
+        println!("Loading secrets from {:?}", path);
+        if let Ok(content) = fs::read_to_string(&path) {
+            for line in content.lines() {
+                let line = line.trim();
+                // Ignore comments and empty lines
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                if let Some((key, value)) = line.split_once('=') {
+                    let key = key.trim();
+                    let mut value = value.trim();
+
+                    // Handle quotes
+                    if (value.starts_with('"') && value.ends_with('"'))
+                        || (value.starts_with('\'') && value.ends_with('\''))
+                    {
+                        value = &value[1..value.len() - 1];
+                    }
+
+                    // Only set if not already set in the actual environment
+                    if env::var(key).is_err() {
+                        // Handle escaped newlines (common in private keys)
+                        let val_string = value.replace("\\n", "\n");
+                        // SAFETY: This is called at the beginning of main, before any other threads are spawned.
+                        unsafe {
+                            env::set_var(key, val_string);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 
 pub fn register(lua: &Lua) -> LuaResult<()> {
     let logging = lua.create_table()?;

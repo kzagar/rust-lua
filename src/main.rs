@@ -67,6 +67,7 @@ fn register_modules(lua: &Lua, app_state: Arc<Mutex<AppState>>) -> LuaResult<()>
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> LuaResult<()> {
+    util::load_secrets();
     logger::SimpleLogger::init();
 
     let args: Vec<String> = std::env::args().collect();
