@@ -40,4 +40,5 @@ pub struct AppState {
     pub cron_jobs: Vec<CronJobInfo>,
     pub telegram_handler: Option<RegistryKey>,
     pub config: Option<ServerConfig>,
+    pub gmail_state: Option<std::sync::Arc<crate::gmail::GmailState>>,
 }

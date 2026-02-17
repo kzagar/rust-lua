@@ -1,4 +1,5 @@
 mod cron;
+mod gmail;
 mod ibkr;
 mod sql;
 mod telegram;
@@ -25,6 +26,7 @@ fn register_modules(lua: &Lua, app_state: Arc<Mutex<AppState>>) -> LuaResult<()>
     web_server::register(lua, app_state.clone())?;
     cron::register(lua, app_state.clone())?;
     telegram::register(lua, app_state.clone())?;
+    gmail::register(lua, app_state.clone())?;
 
     // Help with random strings
     let uuid_func = lua.create_function(|_, ()| Ok(Uuid::new_v4().to_string()))?;
@@ -71,12 +73,31 @@ async fn main() -> LuaResult<()> {
     let _debouncer = watcher::setup_watcher(&abs_path, tx)?;
 
     let lua = Lua::new();
+    let gmail_state = gmail::init_gmail_state().await.ok();
+
+    // Cleanup attachments at startup
+    if let Some(gs) = &gmail_state {
+        let dir = &gs.attachment_manager.dir;
+        if dir.exists() {
+            println!("Cleaning up attachment directory: {:?}", dir);
+            if let Ok(entries) = fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() {
+                        let _ = fs::remove_file(path);
+                    }
+                }
+            }
+        }
+    }
+
     let app_state = Arc::new(Mutex::new(AppState {
         routes: Vec::new(),
         static_routes: Vec::new(),
         cron_jobs: Vec::new(),
         telegram_handler: None,
         config: None,
+        gmail_state,
     }));
     register_modules(&lua, app_state.clone())?;
 
