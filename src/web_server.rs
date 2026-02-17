@@ -109,6 +109,7 @@ pub async fn start(
         !state.routes.is_empty()
             || !state.static_routes.is_empty()
             || !state.reverse_proxies.is_empty()
+            || state.gmail_state.is_some()
     };
 
     if should_run {

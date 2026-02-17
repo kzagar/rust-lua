@@ -89,7 +89,16 @@ async fn main() -> LuaResult<()> {
     });
 
     let lua = Lua::new();
-    let gmail_state = gmail::init_gmail_state().await.ok();
+    let gmail_state = match gmail::init_gmail_state().await {
+        Ok(state) => Some(state),
+        Err(e) => {
+            eprintln!("Warning: Gmail not initialized: {}", e);
+            eprintln!("To enable Gmail support, create a '.secrets' file in the root directory with:");
+            eprintln!("  GOOGLE_CLIENT_SECRET=/path/to/your/google_client_secrets.json");
+            eprintln!("  GMAIL_ATTACHMENT_DIR=attachments (Optional)");
+            None
+        }
+    };
 
     // Cleanup attachments at startup
     if let Some(gs) = &gmail_state {
@@ -159,6 +168,7 @@ async fn main() -> LuaResult<()> {
                             || !state.cron_jobs.is_empty()
                             || !state.reverse_proxies.is_empty()
                             || state.telegram_handler.is_some()
+                            || state.gmail_state.is_some()
                     };
 
                     if should_run {

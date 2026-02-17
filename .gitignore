@@ -1,15 +1,4 @@
-.gitattributes
-
-*.so
-*.o
-*.a
-
-manual/manual.html
-
-testes/time.txt
-testes/time-debug.txt
-
-testes/libs/all
+.secrets
 .venv
 .env
 temp
@@ -20,5 +9,5 @@ Cargo.lock
 check_output.txt
 zig-linux-*.tar.xz
 zig-toolchain
-mlua-test/*.ipk
-mlua-test/*.db
+*.ipk
+*.db

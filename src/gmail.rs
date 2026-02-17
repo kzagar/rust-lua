@@ -589,7 +589,7 @@ pub fn register(lua: &Lua, app_state: Arc<Mutex<AppState>>) -> LuaResult<()> {
 
             let gmail_state = match gmail_state {
                 Some(s) => s,
-                None => return Err(LuaError::RuntimeError("Gmail not initialized".into())),
+                None => return Err(LuaError::RuntimeError("Gmail not initialized (check startup warnings for instructions)".into())),
             };
 
             let row = {
@@ -670,13 +670,29 @@ pub async fn handle_callback(
 
 pub async fn init_gmail_state() -> Result<Arc<GmailState>, Box<dyn std::error::Error>> {
     let secrets_path = Path::new(".secrets");
-    if !secrets_path.exists() {
-        return Err("No .secrets file found".into());
+    let mut google_client_secret = std::env::var("GOOGLE_CLIENT_SECRET").ok();
+    let mut attachment_dir_str = std::env::var("GMAIL_ATTACHMENT_DIR").ok();
+
+    if secrets_path.exists() {
+        let content = fs::read_to_string(secrets_path)?;
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some((key, value)) = line.split_once('=') {
+                let key = key.trim();
+                let value = value.trim().trim_matches('"').trim_matches('\'');
+                if key == "GOOGLE_CLIENT_SECRET" && google_client_secret.is_none() {
+                    google_client_secret = Some(value.to_string());
+                } else if key == "GMAIL_ATTACHMENT_DIR" && attachment_dir_str.is_none() {
+                    attachment_dir_str = Some(value.to_string());
+                }
+            }
+        }
     }
-    let content = fs::read_to_string(secrets_path)?;
-    let mut lines = content.lines();
-    let credentials_path = lines.next().ok_or("Empty .secrets file")?;
-    let attachment_dir_str = lines.next();
+
+    let credentials_path = google_client_secret.ok_or("Missing GOOGLE_CLIENT_SECRET in .secrets or environment")?;
 
     let cred_content = fs::read_to_string(credentials_path)?;
     let config_json: serde_json::Value = serde_json::from_str(&cred_content)?;

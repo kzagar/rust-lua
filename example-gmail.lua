@@ -39,15 +39,14 @@ if #msgs > 0 then
 end
 
 -- Example of sending a draft
---[[
+
 local draft_id = mailbox:prepare_draft({
-    to = "recipient@example.com",
+    to = "kzagar@gmail.com",
     subject = "Test from Lua",
     body = "Hello from mlua-test!",
     attachments = {
-        ["test.txt"] = "path/to/test.txt"
+        ["test.txt"] = "test.txt"
     }
 })
 print("Draft created with ID: " .. draft_id)
--- mailbox:send_draft(draft_id)
---]]
+mailbox:send_draft(draft_id)
