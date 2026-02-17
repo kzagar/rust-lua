@@ -20,3 +20,4 @@ check_output.txt
 zig-linux-*.tar.xz
 zig-toolchain
 mlua-test/*.ipk
+mlua-test/server.db

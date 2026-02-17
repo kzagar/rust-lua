@@ -89,12 +89,22 @@ scheduler:register("0/10 * * * * *", function()
     add_user_to_db({ name = "Bot_" .. uuid():sub(1,4), role = "bot" })
 end)
 
+-- List of servers to probe in round-robin fashion
+local servers = {
+    "https://127.0.0.1:3443/api/hello",
+    "https://httpbin.org/get",
+    "https://google.com",
+    "https://github.com",
+    "https://wikipedia.org"
+}
+local next_server_idx = 1
+
 -- Run every 15 seconds (HTTP Latency Probe)
 scheduler:register("0/15 * * * * *", function()
-    print("--- [Cron] Probing httpbin.org ---")
-    local url = "https://127.0.0.1:3443/api/hello"
-    -- local url = "https://google.com"
-    -- local url = "http://httpbin.org/get"
+    local url = servers[next_server_idx]
+    next_server_idx = (next_server_idx % #servers) + 1
+    
+    print(string.format("--- [Cron] Probing %s ---", url))
     local start_time = now()
     
     local res, err = http_client:request_uri(url)
@@ -112,7 +122,7 @@ scheduler:register("0/15 * * * * *", function()
         })
         db:add(log_entry)
     else
-        print("Probe failed: " .. (err or "unknown error"))
+        print("Probe failed for " .. url .. ": " .. (err or "unknown error"))
     end
 end)
 
