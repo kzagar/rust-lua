@@ -1,65 +1,82 @@
 use mlua::prelude::*;
-use reqwest::{Client, Method, header::HeaderMap};
 use serde_json::Value as JsonValue;
+use std::collections::HashMap;
 
 pub struct HttpClient {
-    client: Client,
+    insecure: bool,
 }
 
 impl LuaUserData for HttpClient {
     fn add_methods<M: LuaUserDataMethods<Self>>(methods: &mut M) {
         methods.add_async_method(
             "request_uri",
-            |lua, client, (url, options): (String, Option<LuaTable>)| async move {
-                let mut req = client.client.get(&url); // Default to GET
+            |lua, client, (url, options): (String, Option<LuaTable>)| {
+                let insecure = client.insecure;
+                let lua_ref = lua.clone();
+                async move {
+                    let mut method = "GET".to_string();
+                    let mut body = None;
+                    let mut headers = HashMap::new();
 
-                if let Some(opts) = options {
-                    if let Some(method_str) = opts.get::<Option<String>>("method")? {
-                        let method = Method::from_bytes(method_str.to_uppercase().as_bytes())
-                            .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
-                        req = client.client.request(method, &url);
-                    }
-
-                    if let Some(body) = opts.get::<Option<String>>("body")? {
-                        req = req.body(body);
-                    }
-
-                    if let Some(headers) = opts.get::<Option<LuaTable>>("headers")? {
-                        let mut headermap = HeaderMap::new();
-                        for pair in headers.pairs::<String, String>() {
-                            let (k, v) = pair?;
-                            headermap.insert(
-                                reqwest::header::HeaderName::from_bytes(k.as_bytes())
-                                    .map_err(|e| LuaError::RuntimeError(e.to_string()))?,
-                                reqwest::header::HeaderValue::from_str(&v)
-                                    .map_err(|e| LuaError::RuntimeError(e.to_string()))?,
-                            );
+                    if let Some(opts) = options {
+                        if let Some(m) = opts.get::<Option<String>>("method")? {
+                            method = m.to_uppercase();
                         }
-                        req = req.headers(headermap);
+                        body = opts.get::<Option<String>>("body")?;
+                        if let Some(h_table) = opts.get::<Option<LuaTable>>("headers")? {
+                            for pair in h_table.pairs::<String, String>() {
+                                let (k, v) = pair?;
+                                headers.insert(k, v);
+                            }
+                        }
                     }
-                }
 
-                let resp = req
-                    .send()
+                    let res = tokio::task::spawn_blocking(move || {
+                        let mut req = match method.as_str() {
+                            "GET" => minreq::get(&url),
+                            "POST" => minreq::post(&url),
+                            "PUT" => minreq::put(&url),
+                            "DELETE" => minreq::delete(&url),
+                            "PATCH" => minreq::patch(&url),
+                            "HEAD" => minreq::head(&url),
+                            _ => return Err(format!("Unsupported method: {}", method)),
+                        };
+
+                        if insecure {
+                            // Insecure not easily supported in minreq 2.x without custom proxy/handling
+                        }
+
+                        for (k, v) in headers {
+                            req = req.with_header(k, v);
+                        }
+
+                        if let Some(b) = body {
+                            req = req.with_body(b);
+                        }
+
+                        req.send().map_err(|e| e.to_string())
+                    })
                     .await
-                    .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+                    .map_err(|e| LuaError::RuntimeError(e.to_string()))?
+                    .map_err(LuaError::RuntimeError)?;
 
-                let status = resp.status().as_u16();
-                let headers = lua.create_table()?;
-                for (name, value) in resp.headers() {
-                    headers.set(name.as_str(), value.to_str().unwrap_or(""))?;
+                    let status = res.status_code;
+                    let res_headers = lua_ref.create_table()?;
+                    for (name, value) in &res.headers {
+                        res_headers.set(name.as_str(), value.as_str())?;
+                    }
+                    let res_body = res
+                        .as_str()
+                        .map_err(|e| LuaError::RuntimeError(e.to_string()))?
+                        .to_string();
+
+                    let res_table = lua_ref.create_table()?;
+                    res_table.set("status", status)?;
+                    res_table.set("headers", res_headers)?;
+                    res_table.set("body", res_body)?;
+
+                    Ok((res_table, LuaValue::Nil))
                 }
-                let body = resp
-                    .text()
-                    .await
-                    .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
-
-                let res_table = lua.create_table()?;
-                res_table.set("status", status)?;
-                res_table.set("headers", headers)?;
-                res_table.set("body", body)?;
-
-                Ok((res_table, LuaValue::Nil))
             },
         );
     }
@@ -71,17 +88,11 @@ pub fn register(lua: &Lua) -> LuaResult<()> {
     http.set(
         "new",
         lua.create_function(|_, options: Option<LuaTable>| {
-            let mut builder = Client::builder();
+            let mut insecure = false;
             if let Some(opts) = options {
-                if opts.get::<bool>("insecure").unwrap_or(false) {
-                    builder = builder.danger_accept_invalid_certs(true);
-                }
+                insecure = opts.get::<bool>("insecure").unwrap_or(false);
             }
-            Ok(HttpClient {
-                client: builder
-                    .build()
-                    .map_err(|e| LuaError::RuntimeError(e.to_string()))?,
-            })
+            Ok(HttpClient { insecure })
         })?,
     )?;
     lua.globals().set("http", http)?;

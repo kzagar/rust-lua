@@ -1,7 +1,6 @@
 mod cron;
 mod sql;
 mod types;
-mod watcher;
 mod web_client;
 mod web_server;
 
@@ -12,6 +11,7 @@ use mlua::prelude::*;
 use std::fs;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -36,7 +36,8 @@ fn register_modules(lua: &Lua, app_state: Arc<Mutex<AppState>>) -> LuaResult<()>
     let now_func = lua.create_function(|_, ()| {
         use std::time::{SystemTime, UNIX_EPOCH};
         let start = SystemTime::now();
-        let since_the_epoch = start.duration_since(UNIX_EPOCH)
+        let since_the_epoch = start
+            .duration_since(UNIX_EPOCH)
             .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
         Ok(since_the_epoch.as_secs_f64())
     })?;
@@ -45,7 +46,7 @@ fn register_modules(lua: &Lua, app_state: Arc<Mutex<AppState>>) -> LuaResult<()>
     Ok(())
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> LuaResult<()> {
     let args: Vec<String> = std::env::args().collect();
     let path_str = if args.len() > 1 {
@@ -61,8 +62,18 @@ async fn main() -> LuaResult<()> {
 
     let (tx, mut rx) = mpsc::channel(1);
 
-    // Setup file watcher
-    let _debouncer = watcher::setup_watcher(&abs_path, tx)?;
+    // Setup SIGHUP signal handler for reload
+    let mut sighup = signal(SignalKind::hangup())
+        .map_err(|e| LuaError::RuntimeError(format!("Failed to setup SIGHUP handler: {}", e)))?;
+
+    let tx_sighup = tx.clone();
+    tokio::spawn(async move {
+        loop {
+            sighup.recv().await;
+            println!("SIGHUP received, reloading...");
+            let _ = tx_sighup.send(()).await;
+        }
+    });
 
     let lua = Lua::new();
     let app_state = Arc::new(Mutex::new(AppState {
