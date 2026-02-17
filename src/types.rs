@@ -22,6 +22,7 @@ pub enum EngineRequest {
     Cron(usize),
     TelegramUpdate(JsonValue),
     ProxyAuth(ProxyAuthRequest),
+    Exit(i32),
 }
 
 pub struct RestRouteInfo {

@@ -1,0 +1,16 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.22s
+     Running `target/debug/mlua-test tests/test_rest_exit.lua`
+GCP Logging disabled: credentials not found.
+Watching file: "/app/tests/test_rest_exit.lua"
+Warning: Gmail not initialized: Missing GOOGLE_CLIENT_SECRET in .secrets or environment
+To enable Gmail support, create a '.secrets' file in the root directory with:
+  GOOGLE_CLIENT_SECRET=/path/to/your/google_client_secrets.json
+  GMAIL_ATTACHMENT_DIR=attachments (Optional)
+Warning: IBKR_CLIENT_ID environment variable is missing. IBKR support disabled.
+--- Running Lua script: tests/test_rest_exit.lua ---
+--- Lua script finished ---
+Starting server...
+REST server listening on http://127.0.0.1:3445
+Web Server running. Waiting for changes...
+Exit handler called
+Exit requested with code 12

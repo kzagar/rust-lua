@@ -65,6 +65,23 @@ fn register_modules(lua: &Lua, app_state: Arc<Mutex<AppState>>) -> LuaResult<()>
     })?;
     lua.globals().set("now", now_func)?;
 
+    // Register exit function
+    let app_state_exit = app_state.clone();
+    let exit_func = lua.create_function(move |_, code: Option<i32>| {
+        let code = code.unwrap_or(0);
+        let tx = {
+            let state = app_state_exit.lock().unwrap();
+            state.engine_tx.clone()
+        };
+        if let Some(tx) = tx {
+            let _ = tx.try_send(EngineRequest::Exit(code));
+        } else {
+            std::process::exit(code);
+        }
+        Err::<(), _>(LuaError::RuntimeError(format!("__RUA_EXIT__:{}", code)))
+    })?;
+    lua.globals().set("exit", exit_func)?;
+
     Ok(())
 }
 
@@ -167,38 +184,57 @@ async fn main() -> LuaResult<()> {
 
         tokio::select! {
             res = run_fut => {
+                let mut exit_code_during_run = None;
                 if let Err(e) = res {
-                    eprintln!("Lua execution error: {}", e);
-                    // On error, wait for change
-                    let _ = rx.recv().await;
-                } else {
+                    let err_msg = e.to_string();
+                    if err_msg.contains("__RUA_EXIT__:") {
+                        if let Some(start) = err_msg.find("__RUA_EXIT__:") {
+                            let code_part = &err_msg[start + "__RUA_EXIT__:".len()..];
+                            let code_str: String = code_part.chars().take_while(|c| c.is_ascii_digit()).collect();
+                            exit_code_during_run = Some(code_str.parse::<i32>().unwrap_or(0));
+                        }
+                    } else {
+                        eprintln!("Lua execution error: {}", e);
+                        // On error, wait for change
+                        let _ = rx.recv().await;
+                        continue;
+                    }
+                }
+
+                if exit_code_during_run.is_none() {
                     println!("--- Lua script finished ---");
+                }
 
-                    // Check if we should start server/cron/telegram logic
-                    let should_run = {
-                        let state = app_state.lock().unwrap();
-                        !state.routes.is_empty()
-                            || !state.static_routes.is_empty()
-                            || !state.cron_jobs.is_empty()
-                            || !state.reverse_proxies.is_empty()
-                            || state.telegram_handler.is_some()
-                            || state.gmail_state.is_some()
-                    };
+                // Check if we should start server/cron/telegram logic
+                let should_run = {
+                    let state = app_state.lock().unwrap();
+                    !state.routes.is_empty()
+                        || !state.static_routes.is_empty()
+                        || !state.cron_jobs.is_empty()
+                        || !state.reverse_proxies.is_empty()
+                        || state.telegram_handler.is_some()
+                        || state.gmail_state.is_some()
+                };
 
-                    if should_run {
+                if should_run {
                         // This creates the engine request channel
                         let (tx_engine, mut req_rx) = mpsc::channel::<EngineRequest>(100);
 
+                        {
+                            let mut state = app_state.lock().unwrap();
+                            state.engine_tx = Some(tx_engine.clone());
+                        }
+
                         // Start Web Server
-                        let server_guard_opt =
+                        let mut server_guard_opt =
                             web_server::start(app_state.clone(), tx_engine.clone(), abs_path.clone())
                                 .await;
 
                         // Start Cron Scheduler
-                        let sched_opt = cron::start(app_state.clone(), tx_engine.clone()).await;
+                        let mut sched_opt = cron::start(app_state.clone(), tx_engine.clone()).await;
 
                         // Start Telegram Bot
-                        let tg_opt = telegram::start(app_state.clone(), tx_engine.clone()).await;
+                        let mut tg_opt = telegram::start(app_state.clone(), tx_engine.clone()).await;
 
                         if server_guard_opt.is_some() || sched_opt.is_some() || tg_opt.is_some() {
                             if server_guard_opt.is_some() {
@@ -211,12 +247,40 @@ async fn main() -> LuaResult<()> {
                                 println!("Telegram Bot running. Waiting for changes...");
                             }
 
-                            let mut pending_requests: FuturesUnordered<Pin<Box<dyn std::future::Future<Output = ()>>>> = FuturesUnordered::new();
+                            let mut pending_requests: FuturesUnordered<
+                                std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>,
+                            > = FuturesUnordered::new();
+                            let mut exit_code: Option<i32> = None;
+                            let sleep = tokio::time::sleep(std::time::Duration::from_secs(0));
+                            tokio::pin!(sleep);
+                            let mut timeout_active = false;
 
                             loop {
                                 tokio::select! {
-                                    Some(req_enum) = req_rx.recv() => {
+                                    Some(req_enum) = req_rx.recv(), if exit_code.is_none() => {
                                         match req_enum {
+                                            EngineRequest::Exit(code) => {
+                                                println!("Exit requested with code {}", code);
+                                                exit_code = Some(code);
+                                                // Stop background services
+                                                let _ = server_guard_opt.take();
+                                                if let Some(ref handle) = sched_opt {
+                                                    handle.abort();
+                                                }
+                                                let _ = sched_opt.take();
+                                                let _ = tg_opt.take();
+
+                                                if pending_requests.is_empty() {
+                                                    break;
+                                                }
+
+                                                let timeout_secs = std::env::var("RUA_EXIT_TIMEOUT")
+                                                    .ok()
+                                                    .and_then(|s| s.parse().ok())
+                                                    .unwrap_or(5);
+                                                sleep.as_mut().reset(tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs));
+                                                timeout_active = true;
+                                            }
                                             EngineRequest::Rest(req) => {
                                                 // Handle REST request
                                                 let func_res: LuaResult<LuaFunction> = {
@@ -250,7 +314,13 @@ async fn main() -> LuaResult<()> {
 
                                                             match res {
                                                                 Ok(val) => { response_tx.send(Ok(val)).ok(); },
-                                                                Err(e) => { response_tx.send(Err(e.to_string())).ok(); }
+                                                                Err(e) => {
+                                                                    let mut err_msg = e.to_string();
+                                                                    if matches!(&e, LuaError::RuntimeError(msg) if msg.starts_with("__RUA_EXIT__:")) {
+                                                                        err_msg = "Process exiting".to_string();
+                                                                    }
+                                                                    response_tx.send(Err(err_msg)).ok();
+                                                                }
                                                             }
                                                         };
                                                         pending_requests.push(Box::pin(fut));
@@ -280,13 +350,11 @@ async fn main() -> LuaResult<()> {
                                                     let _lua_ref = &lua;
                                                     let fut = async move {
                                                         // Call Lua function with no arguments
-                                                        if let Err(e) =
-                                                            func.call_async::<()>(()).await
-                                                        {
-                                                            eprintln!(
-                                                                "Error executing cron job: {}",
-                                                                e
-                                                            );
+                                                        match func.call_async::<()>(()).await {
+                                                            Err(e) if !e.to_string().contains("__RUA_EXIT__:") => {
+                                                                eprintln!("Error executing cron job: {}", e);
+                                                            }
+                                                            _ => {}
                                                         }
                                                     };
                                                     pending_requests.push(Box::pin(fut));
@@ -316,13 +384,11 @@ async fn main() -> LuaResult<()> {
                                                         let update_val = lua_ref
                                                             .to_value(&update)
                                                             .unwrap_or(LuaValue::Nil);
-                                                        if let Err(e) =
-                                                            func.call_async::<()>(update_val).await
-                                                        {
-                                                            eprintln!(
-                                                                "Error executing telegram handler: {}",
-                                                                e
-                                                            );
+                                                        match func.call_async::<()>(update_val).await {
+                                                            Err(e) if !e.to_string().contains("__RUA_EXIT__:") => {
+                                                                eprintln!("Error executing telegram handler: {}", e);
+                                                            }
+                                                            _ => {}
                                                         }
                                                     };
                                                     pending_requests.push(Box::pin(fut));
@@ -362,10 +428,9 @@ async fn main() -> LuaResult<()> {
                                                             response_tx.send(allowed).ok();
                                                         }
                                                         Err(e) => {
-                                                            eprintln!(
-                                                                "Error in proxy auth callback: {}",
-                                                                e
-                                                            );
+                                                            if !e.to_string().contains("__RUA_EXIT__:") {
+                                                                eprintln!("Error in proxy auth callback: {}", e);
+                                                            }
                                                             response_tx.send(false).ok();
                                                         }
                                                     }
@@ -375,25 +440,37 @@ async fn main() -> LuaResult<()> {
                                         }
                                     }
                                     Some(_) = pending_requests.next() => {
-                                        // A request finished
+                                        if exit_code.is_some() && pending_requests.is_empty() {
+                                            break;
+                                        }
                                     }
-                                    _ = rx.recv() => {
+                                    _ = &mut sleep, if timeout_active => {
+                                        println!("Exit timeout reached. Terminating...");
+                                        break;
+                                    }
+                                    _ = rx.recv(), if exit_code.is_none() => {
                                         println!("Reload signal received.");
                                         break; // Break logic loop to reload
                                     }
                                 }
+                            }
+
+                            if let Some(code) = exit_code {
+                                std::process::exit(code);
                             }
                         } else {
                              // Failed to start server/cron
                              println!("Waiting for changes to {}...", path_str);
                              let _ = rx.recv().await;
                         }
+                    } else if let Some(code) = exit_code_during_run {
+                        // Exit was called but no background tasks to wait for
+                        std::process::exit(code);
                     } else {
                          // Script finished cleanly with no background tasks
                          println!("No endpoints registered. Script finished.");
                          break;
                     }
-                }
             }
             _ = rx.recv() => {
                // Reloading

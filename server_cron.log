@@ -1,0 +1,21 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.21s
+     Running `target/debug/mlua-test tests/test_cron_exit.lua`
+GCP Logging disabled: credentials not found.
+Watching file: "/app/tests/test_cron_exit.lua"
+Warning: Gmail not initialized: Missing GOOGLE_CLIENT_SECRET in .secrets or environment
+To enable Gmail support, create a '.secrets' file in the root directory with:
+  GOOGLE_CLIENT_SECRET=/path/to/your/google_client_secrets.json
+  GMAIL_ATTACHMENT_DIR=attachments (Optional)
+Warning: IBKR_CLIENT_ID environment variable is missing. IBKR support disabled.
+--- Running Lua script: tests/test_cron_exit.lua ---
+Cron registered
+--- Lua script finished ---
+Cron Scheduler running. Waiting for changes...
+Cron scheduler started with 1 jobs.
+Cron calling exit
+Error executing cron job: runtime error: __RUA_EXIT__:13
+stack traceback:
+	[C]: in global 'exit'
+	src/main.rs:183:4: in function <src/main.rs:183:2>
+
+Exit requested with code 13
