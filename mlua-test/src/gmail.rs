@@ -76,20 +76,16 @@ impl LuaUserData for Mailbox {
                 let token = get_valid_token(mailbox.state.clone(), &mailbox.email).await?;
 
                 let res = tokio::task::spawn_blocking(move || {
-                    minreq::get("https://gmail.googleapis.com/gmail/v1/users/me/messages")
-                        .with_param("q", query.trim())
-                        .with_header("Authorization", format!("Bearer {}", token))
-                        .send()
+                    ureq::get("https://gmail.googleapis.com/gmail/v1/users/me/messages")
+                        .query("q", query.trim())
+                        .set("Authorization", &format!("Bearer {}", token))
+                        .call()
                 })
                 .await
                 .map_err(|e| LuaError::RuntimeError(e.to_string()))?
                 .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
-                let json: serde_json::Value = serde_json::from_str(
-                    res.as_str()
-                        .map_err(|e| LuaError::RuntimeError(e.to_string()))?,
-                )
-                .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+                let json: serde_json::Value = res.into_json().map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
                 let messages = lua.create_table()?;
                 if let Some(msgs) = json.get("messages").and_then(|m| m.as_array()) {
@@ -113,19 +109,15 @@ impl LuaUserData for Mailbox {
             );
 
             let res = tokio::task::spawn_blocking(move || {
-                minreq::get(&url)
-                    .with_header("Authorization", format!("Bearer {}", token))
-                    .send()
+                ureq::get(&url)
+                    .set("Authorization", &format!("Bearer {}", token))
+                    .call()
             })
             .await
             .map_err(|e| LuaError::RuntimeError(e.to_string()))?
             .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
-            let json: serde_json::Value = serde_json::from_str(
-                res.as_str()
-                    .map_err(|e| LuaError::RuntimeError(e.to_string()))?,
-            )
-            .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+            let json: serde_json::Value = res.into_json().map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
             let message = Message {
                 id: id.clone(),
@@ -166,28 +158,19 @@ impl LuaUserData for Mailbox {
 
                 let token = get_valid_token(mailbox.state.clone(), &mailbox.email).await?;
                 let res = tokio::task::spawn_blocking(move || {
-                    minreq::post("https://gmail.googleapis.com/gmail/v1/users/me/drafts")
-                        .with_header("Authorization", format!("Bearer {}", token))
-                        .with_header("Content-Type", "application/json")
-                        .with_body(
-                            serde_json::to_string(&serde_json::json!({
-                                "message": {
-                                    "raw": raw
-                                }
-                            }))
-                            .unwrap(),
-                        )
-                        .send()
+                    ureq::post("https://gmail.googleapis.com/gmail/v1/users/me/drafts")
+                        .set("Authorization", &format!("Bearer {}", token))
+                        .send_json(serde_json::json!({
+                            "message": {
+                                "raw": raw
+                            }
+                        }))
                 })
                 .await
                 .map_err(|e| LuaError::RuntimeError(e.to_string()))?
                 .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
-                let json: serde_json::Value = serde_json::from_str(
-                    res.as_str()
-                        .map_err(|e| LuaError::RuntimeError(e.to_string()))?,
-                )
-                .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+                let json: serde_json::Value = res.into_json().map_err(|e| LuaError::RuntimeError(e.to_string()))?;
                 Ok(json
                     .get("id")
                     .and_then(|v: &serde_json::Value| v.as_str())
@@ -197,23 +180,19 @@ impl LuaUserData for Mailbox {
 
         methods.add_async_method("send_draft", |_, mailbox, draft_id: String| async move {
             let token = get_valid_token(mailbox.state.clone(), &mailbox.email).await?;
-            let body_json = serde_json::to_string(&serde_json::json!({
-                "id": draft_id
-            }))
-            .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
-
+            
             let res = tokio::task::spawn_blocking(move || {
-                minreq::post("https://gmail.googleapis.com/gmail/v1/users/me/drafts/send")
-                    .with_header("Authorization", format!("Bearer {}", token))
-                    .with_header("Content-Type", "application/json")
-                    .with_body(body_json)
-                    .send()
+                ureq::post("https://gmail.googleapis.com/gmail/v1/users/me/drafts/send")
+                    .set("Authorization", &format!("Bearer {}", token))
+                    .send_json(serde_json::json!({
+                        "id": draft_id
+                    }))
             })
             .await
             .map_err(|e| LuaError::RuntimeError(e.to_string()))?
             .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
-            Ok(res.status_code >= 200 && res.status_code < 300)
+            Ok(res.status() >= 200 && res.status() < 300)
         });
 
         methods.add_async_method(
@@ -244,23 +223,19 @@ impl LuaUserData for Mailbox {
                 let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(mime);
 
                 let token = get_valid_token(mailbox.state.clone(), &mailbox.email).await?;
-                let body_json = serde_json::to_string(&serde_json::json!({
-                    "raw": raw
-                }))
-                .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
                 let res = tokio::task::spawn_blocking(move || {
-                    minreq::post("https://gmail.googleapis.com/gmail/v1/users/me/messages/send")
-                        .with_header("Authorization", format!("Bearer {}", token))
-                        .with_header("Content-Type", "application/json")
-                        .with_body(body_json)
-                        .send()
+                    ureq::post("https://gmail.googleapis.com/gmail/v1/users/me/messages/send")
+                        .set("Authorization", &format!("Bearer {}", token))
+                        .send_json(serde_json::json!({
+                            "raw": raw
+                        }))
                 })
                 .await
                 .map_err(|e| LuaError::RuntimeError(e.to_string()))?
                 .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
-                Ok(res.status_code >= 200 && res.status_code < 300)
+                Ok(res.status() >= 200 && res.status() < 300)
             },
         );
     }
@@ -405,19 +380,15 @@ impl LuaUserData for Message {
 
                     let token_clone = token.clone();
                     let res = tokio::task::spawn_blocking(move || {
-                        minreq::get(&url)
-                            .with_header("Authorization", format!("Bearer {}", token_clone))
-                            .send()
+                        ureq::get(&url)
+                            .set("Authorization", &format!("Bearer {}", token_clone))
+                            .call()
                     })
                     .await
                     .map_err(|e| LuaError::RuntimeError(e.to_string()))?
                     .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
-                    let json: serde_json::Value = serde_json::from_str(
-                        res.as_str()
-                            .map_err(|e| LuaError::RuntimeError(e.to_string()))?,
-                    )
-                    .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+                    let json: serde_json::Value = res.into_json().map_err(|e| LuaError::RuntimeError(e.to_string()))?;
                     if let Some(data) = json
                         .get("data")
                         .and_then(|v: &serde_json::Value| v.as_str())
@@ -557,23 +528,18 @@ pub async fn get_valid_token(state: Arc<GmailState>, email: &str) -> LuaResult<S
             let client_id = state.config.client_id.clone();
             let client_secret = state.config.client_secret.clone();
             let res = tokio::task::spawn_blocking(move || {
-                minreq::post("https://oauth2.googleapis.com/token")
-                    .with_header("Content-Type", "application/x-www-form-urlencoded")
-                    .with_body(format!(
+                ureq::post("https://oauth2.googleapis.com/token")
+                    .set("Content-Type", "application/x-www-form-urlencoded")
+                    .send_string(&format!(
                         "client_id={}&client_secret={}&refresh_token={}&grant_type=refresh_token",
                         client_id, client_secret, rf_token
                     ))
-                    .send()
             })
             .await
             .map_err(|e| LuaError::RuntimeError(e.to_string()))?
             .map_err(|e| LuaError::RuntimeError(format!("Failed to refresh token: {}", e)))?;
 
-            let token_res: TokenResponse = serde_json::from_str(
-                res.as_str()
-                    .map_err(|e| LuaError::RuntimeError(e.to_string()))?,
-            )
-            .map_err(|e| {
+            let token_res: TokenResponse = res.into_json().map_err(|e| {
                 LuaError::RuntimeError(format!("Failed to parse refresh response: {}", e))
             })?;
 
@@ -666,19 +632,18 @@ pub async fn handle_callback(
     let client_secret = state.config.client_secret.clone();
     let redirect_uri = state.config.redirect_uri.clone();
     let res = tokio::task::spawn_blocking(move || {
-        minreq::post("https://oauth2.googleapis.com/token")
-            .with_header("Content-Type", "application/x-www-form-urlencoded")
-            .with_body(format!(
+        ureq::post("https://oauth2.googleapis.com/token")
+            .set("Content-Type", "application/x-www-form-urlencoded")
+            .send_string(&format!(
                 "client_id={}&client_secret={}&code={}&grant_type=authorization_code&redirect_uri={}",
                 client_id,
                 client_secret,
                 code,
                 urlencoding::encode(&redirect_uri)
             ))
-            .send()
     }).await??;
 
-    let token_res: TokenResponse = serde_json::from_str(res.as_str()?)?;
+    let token_res: TokenResponse = res.into_json()?;
 
     let access_token = token_res.access_token;
     let refresh_token = token_res.refresh_token;

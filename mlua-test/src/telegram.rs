@@ -59,17 +59,16 @@ pub fn register(lua: &Lua, app_state: Arc<Mutex<AppState>>) -> LuaResult<()> {
             .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
             let res = tokio::task::spawn_blocking(move || {
-                minreq::post(&url)
-                    .with_header("Content-Type", "application/json")
-                    .with_body(body)
-                    .send()
+                ureq::post(&url)
+                    .set("Content-Type", "application/json")
+                    .send_string(&body)
             })
             .await
             .map_err(|e| LuaError::RuntimeError(e.to_string()))?
             .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
-            if res.status_code < 200 || res.status_code >= 300 {
-                let body = res.as_str().unwrap_or_default();
+            if res.status() < 200 || res.status() >= 300 {
+                let body = res.into_string().unwrap_or_default();
                 return Ok((false, Some(format!("Telegram API error: {}", body))));
             }
 
@@ -109,13 +108,13 @@ pub async fn start(
 
         loop {
             let current_url = format!("{}?offset={}&timeout=30", url, offset);
-            let res = tokio::task::spawn_blocking(move || minreq::get(current_url).send()).await;
+            let res = tokio::task::spawn_blocking(move || ureq::get(&current_url).call()).await;
 
             match res {
                 Ok(Ok(resp)) => {
-                    if resp.status_code >= 200 && resp.status_code < 300 {
+                    if resp.status() >= 200 && resp.status() < 300 {
                         let json: JsonValue =
-                            match serde_json::from_str(resp.as_str().unwrap_or("{}")) {
+                            match resp.into_json() {
                                 Ok(j) => j,
                                 Err(e) => {
                                     eprintln!("Failed to parse telegram updates: {}", e);
@@ -143,7 +142,7 @@ pub async fn start(
                     } else {
                         eprintln!(
                             "Telegram getUpdates failed with status: {}",
-                            resp.status_code
+                            resp.status()
                         );
                         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                     }

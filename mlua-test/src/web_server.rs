@@ -17,6 +17,7 @@ use mlua::prelude::*;
 use rusqlite::params;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc::Sender, oneshot};
@@ -302,16 +303,15 @@ async fn handle_google_callback(
             let client_secret = config.client_secret.clone();
             let redirect_uri = config.redirect_uri.clone();
             move || {
-                minreq::post("https://oauth2.googleapis.com/token")
-                    .with_header("Content-Type", "application/x-www-form-urlencoded")
-                    .with_body(format!(
+                ureq::post("https://oauth2.googleapis.com/token")
+                    .set("Content-Type", "application/x-www-form-urlencoded")
+                    .send_string(&format!(
                         "client_id={}&client_secret={}&code={}&grant_type=authorization_code&redirect_uri={}",
                         client_id,
                         client_secret,
                         code,
                         urlencoding::encode(&redirect_uri)
                     ))
-                    .send()
             }
         }).await {
             Ok(Ok(r)) => r,
@@ -324,7 +324,7 @@ async fn handle_google_callback(
             _scope: Option<String>,
         }
 
-        let token_res: TokenResponse = match serde_json::from_str(res.as_str().unwrap_or("{}")) {
+        let token_res: TokenResponse = match res.into_json() {
             Ok(t) => t,
             Err(e) => return format!("Failed to parse token response: {}", e).into_response(),
         };
@@ -332,14 +332,14 @@ async fn handle_google_callback(
         // Get email
         let access_token = token_res.access_token.clone();
         let email_res = tokio::task::spawn_blocking(move || {
-            minreq::get("https://www.googleapis.com/oauth2/v3/userinfo")
-                .with_header("Authorization", format!("Bearer {}", access_token))
-                .send()
+            ureq::get("https://www.googleapis.com/oauth2/v3/userinfo")
+                .set("Authorization", &format!("Bearer {}", access_token))
+                .call()
         })
         .await;
 
         let email_json: serde_json::Value = match email_res {
-            Ok(Ok(r)) => serde_json::from_str(r.as_str().unwrap_or("{}")).unwrap_or_default(),
+            Ok(Ok(r)) => r.into_json().unwrap_or_default(),
             _ => return "Failed to get user info".into_response(),
         };
 
@@ -511,20 +511,19 @@ async fn forward_request(proxy: ReverseProxyInfo, req: Request) -> Response {
     };
 
     let res = match tokio::task::spawn_blocking(move || {
-        let mut minreq_req = match method.as_str() {
-            "GET" => minreq::get(&url),
-            "POST" => minreq::post(&url),
-            "PUT" => minreq::put(&url),
-            "DELETE" => minreq::delete(&url),
-            "PATCH" => minreq::patch(&url),
+        let mut ureq_req = match method.as_str() {
+            "GET" => ureq::get(&url),
+            "POST" => ureq::post(&url),
+            "PUT" => ureq::put(&url),
+            "DELETE" => ureq::delete(&url),
+            "PATCH" => ureq::patch(&url),
             _ => return Err("Unsupported method".to_string()),
         };
 
         for (k, v) in headers {
-            minreq_req = minreq_req.with_header(k, v);
+            ureq_req = ureq_req.set(&k, &v);
         }
-        minreq_req = minreq_req.with_body(body_bytes);
-        minreq_req.send().map_err(|e| e.to_string())
+        ureq_req.send_bytes(&body_bytes).map_err(|e| e.to_string())
     })
     .await
     {
@@ -532,13 +531,23 @@ async fn forward_request(proxy: ReverseProxyInfo, req: Request) -> Response {
         _ => return (StatusCode::BAD_GATEWAY, "Proxy error").into_response(),
     };
 
-    let mut response_builder = Response::builder().status(res.status_code as u16);
-    for (name, value) in &res.headers {
-        response_builder = response_builder.header(name, value);
+    let status = res.status();
+    let mut response_builder = Response::builder().status(status as u16);
+    
+    // Copy headers from ureq response to axum response
+    for name in res.headers_names() {
+        if let Some(value) = res.header(&name) {
+            response_builder = response_builder.header(name, value);
+        }
+    }
+
+    let mut response_body = Vec::new();
+    if res.into_reader().read_to_end(&mut response_body).is_err() {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to read response body").into_response();
     }
 
     response_builder
-        .body(Body::from(res.into_bytes()))
+        .body(Body::from(response_body))
         .unwrap_or_else(|_| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,

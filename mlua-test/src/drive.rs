@@ -4,6 +4,7 @@ use chrono::DateTime;
 use mlua::prelude::*;
 use rusqlite::{OptionalExtension, params};
 use std::fs;
+use std::io::Read;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -70,22 +71,24 @@ impl LuaUserData for DriveFile {
                 let token = get_valid_token(state.clone(), email).await?;
                 let url = format!("https://www.googleapis.com/drive/v3/files/{}?alt=media", id);
                 let res = tokio::task::spawn_blocking(move || {
-                    minreq::get(&url)
-                        .with_header("Authorization", format!("Bearer {}", token))
-                        .send()
+                    ureq::get(&url)
+                        .set("Authorization", &format!("Bearer {}", token))
+                        .call()
                 })
                 .await
                 .map_err(|e| LuaError::RuntimeError(e.to_string()))?
                 .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
-                if res.status_code < 200 || res.status_code >= 300 {
+                if res.status() < 200 || res.status() >= 300 {
                     return Err(LuaError::RuntimeError(format!(
                         "Failed to download file content: Status {}",
-                        res.status_code
+                        res.status()
                     )));
                 }
 
-                res.into_bytes()
+                let mut bytes = Vec::new();
+                res.into_reader().read_to_end(&mut bytes).map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+                bytes
             } else {
                 return Err(LuaError::RuntimeError("No data in file object".into()));
             };
@@ -137,19 +140,15 @@ impl LuaUserData for Drive {
             }
 
             let res = tokio::task::spawn_blocking(move || {
-                minreq::get(&url)
-                    .with_header("Authorization", format!("Bearer {}", token))
-                    .send()
+                ureq::get(&url)
+                    .set("Authorization", &format!("Bearer {}", token))
+                    .call()
             })
             .await
             .map_err(|e| LuaError::RuntimeError(e.to_string()))?
             .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
-            let json: serde_json::Value = serde_json::from_str(
-                res.as_str()
-                    .map_err(|e| LuaError::RuntimeError(e.to_string()))?,
-            )
-            .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+            let json: serde_json::Value = res.into_json().map_err(|e| LuaError::RuntimeError(e.to_string()))?;
             let files_json = json
                 .get("files")
                 .and_then(|f| f.as_array())
@@ -189,37 +188,35 @@ impl LuaUserData for Drive {
             let url_meta = format!("https://www.googleapis.com/drive/v3/files/{}", id);
             let token_clone = token.clone();
             let res_meta = tokio::task::spawn_blocking(move || {
-                minreq::get(&url_meta)
-                    .with_header("Authorization", format!("Bearer {}", token_clone))
-                    .send()
+                ureq::get(&url_meta)
+                    .set("Authorization", &format!("Bearer {}", token_clone))
+                    .call()
             })
             .await
             .map_err(|e| LuaError::RuntimeError(e.to_string()))?
             .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
-            let metadata: serde_json::Value = serde_json::from_str(
-                res_meta
-                    .as_str()
-                    .map_err(|e| LuaError::RuntimeError(e.to_string()))?,
-            )
-            .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+            let metadata: serde_json::Value = res_meta.into_json().map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
             // Get content
             let url_media = format!("https://www.googleapis.com/drive/v3/files/{}?alt=media", id);
             let res_media = tokio::task::spawn_blocking(move || {
-                minreq::get(&url_media)
-                    .with_header("Authorization", format!("Bearer {}", token))
-                    .send()
+                ureq::get(&url_media)
+                    .set("Authorization", &format!("Bearer {}", token))
+                    .call()
             })
             .await
             .map_err(|e| LuaError::RuntimeError(e.to_string()))?
             .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
-            if res_media.status_code < 200 || res_media.status_code >= 300 {
+            if res_media.status() < 200 || res_media.status() >= 300 {
                 return Err(LuaError::RuntimeError(format!(
                     "Failed to get file content: Status {}",
-                    res_media.status_code
+                    res_media.status()
                 )));
             }
+
+            let mut bytes = Vec::new();
+            res_media.into_reader().read_to_end(&mut bytes).map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
             Ok(DriveFile {
                 id: Some(id),
@@ -233,7 +230,7 @@ impl LuaUserData for Drive {
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string()),
                 path: None,
-                blob: Some(res_media.into_bytes()),
+                blob: Some(bytes),
                 email: Some(this.email.clone()),
                 state: Some(this.state.clone()),
             })
@@ -251,13 +248,13 @@ impl LuaUserData for Drive {
             let url = format!("https://www.googleapis.com/drive/v3/files?q={}&fields=files(id, name, modifiedTime)", urlencoding::encode(&q));
 
             let res = tokio::task::spawn_blocking(move || {
-                minreq::get(&url)
-                    .with_header("Authorization", format!("Bearer {}", token))
-                    .send()
+                ureq::get(&url)
+                    .set("Authorization", &format!("Bearer {}", token))
+                    .call()
             }).await.map_err(|e| LuaError::RuntimeError(e.to_string()))?
             .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
-            let json: serde_json::Value = serde_json::from_str(res.as_str().map_err(|e| LuaError::RuntimeError(e.to_string()))?)
+            let json: serde_json::Value = res.into_json()
                 .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
             let files_json = json.get("files").and_then(|f| f.as_array()).ok_or_else(|| LuaError::RuntimeError("Invalid response".into()))?;
 
@@ -299,20 +296,16 @@ impl LuaUserData for Drive {
 
                 let token_clone = token.clone();
                 let res_check = tokio::task::spawn_blocking(move || {
-                    minreq::get(&url_check)
-                        .with_header("Authorization", format!("Bearer {}", token_clone))
-                        .send()
+                    ureq::get(&url_check)
+                        .set("Authorization", &format!("Bearer {}", token_clone))
+                        .call()
                 })
                 .await
                 .map_err(|e| LuaError::RuntimeError(e.to_string()))?
                 .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
-                let json: serde_json::Value = serde_json::from_str(
-                    res_check
-                        .as_str()
-                        .map_err(|e| LuaError::RuntimeError(e.to_string()))?,
-                )
-                .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+                let json: serde_json::Value = res_check.into_json()
+                    .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
                 let files = json.get("files").and_then(|f| f.as_array()).unwrap();
 
                 let data = if let Some(ref b) = file.blob {
@@ -335,16 +328,15 @@ impl LuaUserData for Drive {
                         .clone()
                         .unwrap_or_else(|| "application/octet-stream".to_string());
                     let res = tokio::task::spawn_blocking(move || {
-                        minreq::patch(&url_patch)
-                            .with_header("Authorization", format!("Bearer {}", token))
-                            .with_header("Content-Type", mime)
-                            .with_body(data)
-                            .send()
+                        ureq::patch(&url_patch)
+                            .set("Authorization", &format!("Bearer {}", token))
+                            .set("Content-Type", &mime)
+                            .send(&data[..])
                     })
                     .await
                     .map_err(|e| LuaError::RuntimeError(e.to_string()))?
                     .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
-                    Ok(res.status_code >= 200 && res.status_code < 300)
+                    Ok(res.status() >= 200 && res.status() < 300)
                 } else {
                     // Create
                     let metadata = serde_json::json!({
@@ -379,21 +371,20 @@ impl LuaUserData for Drive {
                     body.extend_from_slice(format!("--{}--\r\n", boundary).as_bytes());
 
                     let res = tokio::task::spawn_blocking(move || {
-                        minreq::post(
+                        ureq::post(
                             "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",
                         )
-                        .with_header("Authorization", format!("Bearer {}", token))
-                        .with_header(
+                        .set("Authorization", &format!("Bearer {}", token))
+                        .set(
                             "Content-Type",
-                            format!("multipart/related; boundary={}", boundary),
+                            &format!("multipart/related; boundary={}", boundary),
                         )
-                        .with_body(body)
-                        .send()
+                        .send(&body[..])
                     })
                     .await
                     .map_err(|e| LuaError::RuntimeError(e.to_string()))?
                     .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
-                    Ok(res.status_code >= 200 && res.status_code < 300)
+                    Ok(res.status() >= 200 && res.status() < 300)
                 }
             },
         );
@@ -432,19 +423,16 @@ async fn resolve_path(state: Arc<GmailState>, email: &str, path: &str) -> LuaRes
         );
 
         let res = tokio::task::spawn_blocking(move || {
-            minreq::get(&url)
-                .with_header("Authorization", format!("Bearer {}", token))
-                .send()
+            ureq::get(&url)
+                .set("Authorization", &format!("Bearer {}", token))
+                .call()
         })
         .await
         .map_err(|e| LuaError::RuntimeError(e.to_string()))?
         .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
-        let json: serde_json::Value = serde_json::from_str(
-            res.as_str()
-                .map_err(|e| LuaError::RuntimeError(e.to_string()))?,
-        )
-        .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+        let json: serde_json::Value = res.into_json()
+            .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
         let files = json
             .get("files")
             .and_then(|f| f.as_array())

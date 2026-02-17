@@ -9,7 +9,6 @@ tokio = { version = "1.49.0", features = ["rt", "macros", "time", "sync", "signa
 rusqlite = { version = "0.33.0", features = ["chrono"] }
 chrono = { version = "0.4.39", features = ["serde", "clock"] }
 uuid = { version = "1.21.0", features = ["v4"] }
-minreq = { version = "2.13.0", features = ["https-native"] }
 ureq = { version = "2.12.1", features = ["native-tls", "json"] }
 native-tls = "0.2"
 serde = { version = "1.0.210", features = ["derive"] }

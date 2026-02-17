@@ -71,20 +71,20 @@ impl IbkrState {
         );
 
         let resp = tokio::task::spawn_blocking(move || {
-            minreq::post(TOKEN_ENDPOINT)
-                .with_header("Content-Type", "application/x-www-form-urlencoded")
-                .with_body(body)
-                .send()
+            ureq::post(TOKEN_ENDPOINT)
+                .set("Content-Type", "application/x-www-form-urlencoded")
+                .send_string(&body)
         })
         .await
         .map_err(|e| LuaError::RuntimeError(e.to_string()))?
         .map_err(|e| LuaError::RuntimeError(format!("Token request failed: {}", e)))?;
 
-        if resp.status_code < 200 || resp.status_code >= 300 {
-            let err_text = resp.as_str().unwrap_or_default();
+        if resp.status() < 200 || resp.status() >= 300 {
+            let status = resp.status();
+            let err_text = resp.into_string().unwrap_or_default();
             return Err(LuaError::RuntimeError(format!(
                 "Token request returned error ({}): {}",
-                resp.status_code, err_text
+                status, err_text
             )));
         }
 
@@ -94,11 +94,8 @@ impl IbkrState {
             expires_in: u64,
         }
 
-        let token_resp: TokenResponse = serde_json::from_str(
-            resp.as_str()
-                .map_err(|e| LuaError::RuntimeError(e.to_string()))?,
-        )
-        .map_err(|e| LuaError::RuntimeError(format!("Failed to parse token response: {}", e)))?;
+        let token_resp: TokenResponse = resp.into_json()
+            .map_err(|e| LuaError::RuntimeError(format!("Failed to parse token response: {}", e)))?;
 
         self.access_token = Some(token_resp.access_token.clone());
         self.token_expiry = Some(Instant::now() + Duration::from_secs(token_resp.expires_in));
@@ -117,40 +114,38 @@ impl IbkrState {
 
         let resp = tokio::task::spawn_blocking(move || {
             let mut req = match method.as_str() {
-                "GET" => minreq::get(&url),
-                "POST" => minreq::post(&url),
-                "PUT" => minreq::put(&url),
-                "DELETE" => minreq::delete(&url),
+                "GET" => ureq::get(&url),
+                "POST" => ureq::post(&url),
+                "PUT" => ureq::put(&url),
+                "DELETE" => ureq::delete(&url),
                 _ => return Err(format!("Unsupported method: {}", method)),
             };
 
-            req = req.with_header("Authorization", format!("Bearer {}", token));
+            req = req.set("Authorization", &format!("Bearer {}", token));
 
-            if let Some(b) = body {
-                req = req.with_header("Content-Type", "application/json");
-                req = req.with_body(serde_json::to_string(&b).unwrap_or_default());
-            }
+            let res = if let Some(b) = body {
+                req.send_json(b)
+            } else {
+                req.call()
+            };
 
-            req.send().map_err(|e| e.to_string())
+            res.map_err(|e| e.to_string())
         })
         .await
         .map_err(|e| LuaError::RuntimeError(e.to_string()))?
         .map_err(LuaError::RuntimeError)?;
 
-        if resp.status_code < 200 || resp.status_code >= 300 {
-            let status = resp.status_code;
-            let err_text = resp.as_str().unwrap_or_default();
+        let status = resp.status();
+        if !(200..300).contains(&status) {
+            let err_text = resp.into_string().unwrap_or_default();
             return Err(LuaError::RuntimeError(format!(
                 "API error ({}): {}",
                 status, err_text
             )));
         }
 
-        serde_json::from_str(
-            resp.as_str()
-                .map_err(|e| LuaError::RuntimeError(e.to_string()))?,
-        )
-        .map_err(|e| LuaError::RuntimeError(format!("Failed to parse API response: {}", e)))
+        resp.into_json()
+            .map_err(|e| LuaError::RuntimeError(format!("Failed to parse API response: {}", e)))
     }
 
     async fn ensure_account_id(&mut self) -> LuaResult<String> {
