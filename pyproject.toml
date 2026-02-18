@@ -1,7 +1,7 @@
 [project]
-name = "mlua-test-concurrency"
+name = "lumen-concurrency"
 version = "0.1.0"
-description = "Concurrency test for mlua-test"
+description = "Concurrency test for Lumen"
 dependencies = [
     "httpx",
     "numpy",

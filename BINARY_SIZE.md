@@ -1,6 +1,6 @@
-# Binary Size Optimization Report for mlua-test
+# Binary Size Optimization Report for Lumen
 
-This report details the efforts to reduce the binary size of the `mlua-test`
+This report details the efforts to reduce the binary size of the `lumen`
 project, targeting an embedded environment (OpenWrt on aarch64).
 
 ## Baseline

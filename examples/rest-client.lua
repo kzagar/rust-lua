@@ -42,7 +42,7 @@ end
 
 print("\nTesting JSON encoding...")
 local test_table = {
-    name = "mlua-test",
+    name = "Lumen",
     features = {"http", "json", "sqlite3"},
     active = true,
     version = 0.1

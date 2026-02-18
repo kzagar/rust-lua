@@ -43,7 +43,7 @@ end
 local draft_id = mailbox:prepare_draft({
     to = "kzagar@gmail.com",
     subject = "Test from Lua",
-    body = "Hello from mlua-test!",
+    body = "Hello from Lumen!",
     attachments = {
         ["test.txt"] = "test.txt"
     }

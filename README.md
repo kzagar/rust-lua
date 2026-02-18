@@ -39,7 +39,7 @@ Planned features:
 An application is a collection of Lua scripts and configuration files that are
 run by the Lumen framework.
 
-# mlua-test (aarch64-musl-vendored-lua55)
+# Lumen (aarch64-musl-vendored-lua55)
 
 This project is an example Rust application using `mlua` and `tokio`, configured
 to link **statically** to vendored Lua 5.5 for `aarch64-unknown-linux-musl`
@@ -74,7 +74,7 @@ cargo zigbuild --release --target aarch64-unknown-linux-musl
 ```
 
 The resulting binary will be located at:
-`target/aarch64-unknown-linux-musl/release/mlua-test`
+`target/aarch64-unknown-linux-musl/release/lumen`
 
 ## Deployment (Installation)
 
@@ -82,11 +82,11 @@ To install the binary on your target device (e.g., OpenWrt):
 
 1.  **Copy to Target**:
     ```bash
-    scp target/aarch64-unknown-linux-musl/release/mlua-test root@<target-ip>:/usr/bin/
+    scp target/aarch64-unknown-linux-musl/release/lumen root@<target-ip>:/usr/bin/
     ```
 2.  **Set Permissions**:
     ```bash
-    ssh root@<target-ip> "chmod +x /usr/bin/mlua-test"
+    ssh root@<target-ip> "chmod +x /usr/bin/lumen"
     ```
 
 ## Runtime on OpenWrt
@@ -168,7 +168,7 @@ log level is set to `info`.
 
 - **Module Specific Logging**:
   ```bash
-  export RUST_LOG=mlua_test=debug,ureq=warn
+  export RUST_LOG=lumen=debug,ureq=warn
   ```
 
 ## Optimization Features

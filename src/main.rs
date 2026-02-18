@@ -66,10 +66,8 @@ fn register_modules(lua: &Lua, app_state: Arc<Mutex<AppState>>) -> LuaResult<()>
     lua.globals().set("now", now_func)?;
 
     // Register version and environment
-    lua.globals()
-        .set("MLUA_TEST_VERSION", env!("MLUA_TEST_VERSION"))?;
-    lua.globals()
-        .set("MLUA_TEST_ENV", env!("MLUA_TEST_BUILD_ENV"))?;
+    lua.globals().set("LUMEN_VERSION", env!("LUMEN_VERSION"))?;
+    lua.globals().set("LUMEN_ENV", env!("LUMEN_BUILD_ENV"))?;
 
     // Register exit function
     let app_state_exit = app_state.clone();
@@ -84,7 +82,7 @@ fn register_modules(lua: &Lua, app_state: Arc<Mutex<AppState>>) -> LuaResult<()>
         } else {
             std::process::exit(code);
         }
-        Err::<(), _>(LuaError::RuntimeError(format!("__RUA_EXIT__:{}", code)))
+        Err::<(), _>(LuaError::RuntimeError(format!("__LUMEN_EXIT__:{}", code)))
     })?;
     lua.globals().set("exit", exit_func)?;
 
@@ -203,9 +201,9 @@ async fn main() -> LuaResult<()> {
                 let mut exit_code_during_run = None;
                 if let Err(e) = res {
                     let err_msg = e.to_string();
-                    if err_msg.contains("__RUA_EXIT__:") {
-                        if let Some(start) = err_msg.find("__RUA_EXIT__:") {
-                            let code_part = &err_msg[start + "__RUA_EXIT__:".len()..];
+                    if err_msg.contains("__LUMEN_EXIT__:") {
+                        if let Some(start) = err_msg.find("__LUMEN_EXIT__:") {
+                            let code_part = &err_msg[start + "__LUMEN_EXIT__:".len()..];
                             let code_str: String = code_part.chars().take_while(|c| c.is_ascii_digit()).collect();
                             exit_code_during_run = Some(code_str.parse::<i32>().unwrap_or(0));
                         }
@@ -290,7 +288,7 @@ async fn main() -> LuaResult<()> {
                                                     break;
                                                 }
 
-                                                let timeout_secs = std::env::var("RUA_EXIT_TIMEOUT")
+                                                let timeout_secs = std::env::var("LUMEN_EXIT_TIMEOUT")
                                                     .ok()
                                                     .and_then(|s| s.parse().ok())
                                                     .unwrap_or(5);
@@ -332,7 +330,7 @@ async fn main() -> LuaResult<()> {
                                                                 Ok(val) => { response_tx.send(Ok(val)).ok(); },
                                                                 Err(e) => {
                                                                     let mut err_msg = e.to_string();
-                                                                    if matches!(&e, LuaError::RuntimeError(msg) if msg.starts_with("__RUA_EXIT__:")) {
+                                                                    if matches!(&e, LuaError::RuntimeError(msg) if msg.starts_with("__LUMEN_EXIT__:")) {
                                                                         err_msg = "Process exiting".to_string();
                                                                     }
                                                                     response_tx.send(Err(err_msg)).ok();
@@ -367,7 +365,7 @@ async fn main() -> LuaResult<()> {
                                                     let fut = async move {
                                                         // Call Lua function with no arguments
                                                         match func.call_async::<()>(()).await {
-                                                            Err(e) if !e.to_string().contains("__RUA_EXIT__:") => {
+                                                            Err(e) if !e.to_string().contains("__LUMEN_EXIT__:") => {
                                                                 eprintln!("Error executing cron job: {}", e);
                                                             }
                                                             _ => {}
@@ -401,7 +399,7 @@ async fn main() -> LuaResult<()> {
                                                             .to_value(&update)
                                                             .unwrap_or(LuaValue::Nil);
                                                         match func.call_async::<()>(update_val).await {
-                                                            Err(e) if !e.to_string().contains("__RUA_EXIT__:") => {
+                                                            Err(e) if !e.to_string().contains("__LUMEN_EXIT__:") => {
                                                                 eprintln!("Error executing telegram handler: {}", e);
                                                             }
                                                             _ => {}
@@ -444,7 +442,7 @@ async fn main() -> LuaResult<()> {
                                                             response_tx.send(allowed).ok();
                                                         }
                                                         Err(e) => {
-                                                            if !e.to_string().contains("__RUA_EXIT__:") {
+                                                            if !e.to_string().contains("__LUMEN_EXIT__:") {
                                                                 eprintln!("Error in proxy auth callback: {}", e);
                                                             }
                                                             response_tx.send(false).ok();

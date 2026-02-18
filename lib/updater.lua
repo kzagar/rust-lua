@@ -12,8 +12,8 @@ local function normalize_version(v)
 end
 
 function updater.update()
-    local env = MLUA_TEST_ENV
-    local current_version = MLUA_TEST_VERSION
+    local env = LUMEN_ENV
+    local current_version = LUMEN_VERSION
     local gh = github.new("kzagar", "rust-lua")
 
     print("Checking for updates... (Current version: " .. current_version .. ", Env: " .. env .. ")")
@@ -79,7 +79,7 @@ function updater.update()
         local blob, err = latest_artifact:get_blob()
         if not blob then return nil, "Failed to download artifact: " .. (err or "unknown error") end
 
-        local tmp_dir = "/tmp/mlua-test-staging-update"
+        local tmp_dir = "/tmp/lumen-staging-update"
         util.execute({"rm", "-rf", tmp_dir})
         util.execute({"mkdir", "-p", tmp_dir})
 
@@ -93,14 +93,14 @@ function updater.update()
         if not res.success then return nil, "Failed to unzip: " .. (res.stderr or "unknown error") end
 
         -- Paths for staging
-        local bin_dest = "/usr/local/bin/mlua-test-staging"
-        local lib_dest = "/usr/share/mlua-test-staging"
+        local bin_dest = "/usr/local/bin/lumen-staging"
+        local lib_dest = "/usr/share/lumen-staging"
 
         print("Installing staging update...")
-        -- We assume artifact contains 'mlua-test' binary and 'lib/' directory
+        -- We assume artifact contains 'lumen' binary and 'lib/' directory
         -- Use rm -f before cp to avoid "Text file busy"
         util.execute({"rm", "-f", bin_dest})
-        util.execute({"cp", tmp_dir .. "/mlua-test", bin_dest})
+        util.execute({"cp", tmp_dir .. "/lumen", bin_dest})
         util.execute({"chmod", "+x", bin_dest})
         util.execute({"mkdir", "-p", lib_dest})
         util.execute({"cp", "-r", tmp_dir .. "/lib/.", lib_dest})

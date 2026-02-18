@@ -18,16 +18,16 @@ jobs:
     - name: Set up Rust
       uses: dtolnay/rust-toolchain@stable
     - name: Build Staging
-      run: MLUA_TEST_BUILD_ENV=staging cargo build --release
+      run: LUMEN_BUILD_ENV=staging cargo build --release
     - name: Prepare Artifact
       run: |
         mkdir -p artifact/lib
-        cp target/release/mlua-test artifact/
+        cp target/release/lumen artifact/
         cp lib/*.lua artifact/lib/
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: mlua-test
+        name: lumen
         path: artifact/
 
   build-release:
@@ -46,7 +46,7 @@ jobs:
     - name: Build Release (aarch64-musl)
       run: |
         rustup target add aarch64-unknown-linux-musl
-        MLUA_TEST_BUILD_ENV=prod cargo zigbuild --release --target aarch64-unknown-linux-musl
+        LUMEN_BUILD_ENV=prod cargo zigbuild --release --target aarch64-unknown-linux-musl
     - name: Package
       run: |
         # We can call build-opkg.sh here, but it might need adjustments for CI paths
@@ -56,7 +56,7 @@ jobs:
       uses: softprops/action-gh-release@v2
       with:
         files: |
-          mlua-test_*.ipk
-          target/aarch64-unknown-linux-musl/release/mlua-test
+          lumen_*.ipk
+          target/aarch64-unknown-linux-musl/release/lumen
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
