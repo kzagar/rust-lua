@@ -65,6 +65,12 @@ fn register_modules(lua: &Lua, app_state: Arc<Mutex<AppState>>) -> LuaResult<()>
     })?;
     lua.globals().set("now", now_func)?;
 
+    // Register version and environment
+    lua.globals()
+        .set("MLUA_TEST_VERSION", env!("MLUA_TEST_VERSION"))?;
+    lua.globals()
+        .set("MLUA_TEST_ENV", env!("MLUA_TEST_BUILD_ENV"))?;
+
     // Register exit function
     let app_state_exit = app_state.clone();
     let exit_func = lua.create_function(move |_, code: Option<i32>| {
@@ -100,6 +106,16 @@ async fn main() -> LuaResult<()> {
     let abs_path = fs::canonicalize(path).map_err(|e| {
         LuaError::RuntimeError(format!("Failed to canonicalize path {}: {}", path_str, e))
     })?;
+
+    // Load secrets from the same directory as the script
+    if let Some(parent) = abs_path.parent() {
+        let mut secrets_path = parent.to_path_buf();
+        secrets_path.push(".secrets");
+        if secrets_path.exists() {
+            util::load_secrets_from_path(&secrets_path);
+        }
+    }
+
     println!("Watching file: {:?}", abs_path);
 
     let (tx, mut rx) = mpsc::channel(1);

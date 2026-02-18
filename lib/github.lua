@@ -76,6 +76,7 @@ function workflow_methods:get_latest()
     local f = file.new(artifact.name .. ".zip")
     f = f:mime("application/zip")
     f.id = tostring(artifact.id)
+    f.version = run.head_sha -- Store the commit SHA as version
 
     local owner, repo = self.owner, self.repo
     f:set_downloader(function(file_obj)
@@ -103,11 +104,12 @@ function gh_methods:get_latest_release()
     local data, err = request("GET", path)
     if not data then return nil, err end
 
-    local files = {}
+    local files = { version = data.tag_name }
     for _, asset in ipairs(data.assets or {}) do
         local f = file.new(asset.name)
         f = f:mime(asset.content_type)
         f.id = tostring(asset.id)
+        f.version = data.tag_name
 
         local owner, repo = self.owner, self.repo
         f:set_downloader(function(file_obj)
