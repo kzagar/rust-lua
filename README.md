@@ -1,3 +1,44 @@
+# Lumen
+
+A lightweight application framework. Small enough to run on home routers and
+free-tier cloud virtual machines, yet powerful enough for hosting complex
+applications.
+
+Core features:
+
+- **Small**. Low storage and memory usage.
+- **Concurrent**. Uses async to andle multiple concurrent tasks efficiently.
+- **Lua**. A lightweight, yet capable, scripting language for application logic.
+- **Simple**. Easy to deploy, use, maintain and extend.
+- **Zero maintenance**. Automated updating of the framework and applications.
+- **Reliable**. Self-checks of updates, separate staging/shadow and production
+  environments.
+
+Optional features:
+
+- **Web**. HTTP(S) server. Bind Lua functions to REST endpoints. Configure a
+  reverse proxy. Serve static pages efficiently.
+- **Authentication**. OAuth worflow for authentication.
+- **Telemetry**. Logging and metrics - on local server or in the cloud.
+- **Database**. Embedded SQLite database.
+- **Scheduled tasks**. Cron-like scheduling.
+- **Chat bot**. Notify humans about important events, and react to their
+  requests.
+
+Planned features:
+
+- **Debugger**. Web interface into a running application.
+- **AI**. Implement agent-based workflows, leveraging Large Language Models and
+  MCP tools.
+- **Speech**. Interact with apps using speech using text-to-speech and
+  speech-to-text.
+- **Documents**. Generate documents with LaTeX, PDF and Markdown support.
+
+## What is an application?
+
+An application is a collection of Lua scripts and configuration files that are
+run by the Lumen framework.
+
 # mlua-test (aarch64-musl-vendored-lua55)
 
 This project is an example Rust application using `mlua` and `tokio`, configured
