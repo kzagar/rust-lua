@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-staging:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@stable
+    - name: Build Staging
+      run: MLUA_TEST_BUILD_ENV=staging cargo build --release
+    - name: Prepare Artifact
+      run: |
+        mkdir -p artifact/lib
+        cp target/release/mlua-test artifact/
+        cp lib/*.lua artifact/lib/
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: mlua-test
+        path: artifact/
+
+  build-release:
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@stable
+    - name: Install cargo-zigbuild
+      run: cargo install cargo-zigbuild
+    - name: Install zig
+      uses: goto-bus-stop/setup-zig@v2
+    - name: Build Release (aarch64-musl)
+      run: |
+        rustup target add aarch64-unknown-linux-musl
+        MLUA_TEST_BUILD_ENV=prod cargo zigbuild --release --target aarch64-unknown-linux-musl
+    - name: Package
+      run: |
+        # We can call build-opkg.sh here, but it might need adjustments for CI paths
+        # For simplicity in this demo, we'll just show the intent
+        ./build-opkg.sh
+    - name: Create Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: |
+          mlua-test_*.ipk
+          target/aarch64-unknown-linux-musl/release/mlua-test
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

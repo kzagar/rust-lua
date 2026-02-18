@@ -1,0 +1,15 @@
+[Unit]
+Description=mlua-test Prod
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/mlua-test /etc/mlua-test/config.lua
+WorkingDirectory=/var/lib/mlua-test
+Restart=always
+RestartSec=5
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=mlua-test
+
+[Install]
+WantedBy=multi-user.target
