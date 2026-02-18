@@ -2,10 +2,10 @@
 set -e
 
 REPO="kzagar/rust-lua"
-BIN_DEST="/usr/local/bin/mlua-test-staging"
-CONFIG_DIR="/etc/mlua-test-staging"
-DATA_DIR="/var/lib/mlua-test-staging"
-LIB_DIR="/usr/share/mlua-test-staging"
+BIN_DEST="/usr/local/bin/lumen-staging"
+CONFIG_DIR="/etc/lumen-staging"
+DATA_DIR="/var/lib/lumen-staging"
+LIB_DIR="/usr/share/lumen-staging"
 
 if [ -z "$GITHUB_TOKEN" ]; then
     echo "Error: GITHUB_TOKEN environment variable is required."
@@ -20,7 +20,7 @@ for cmd in curl jq unzip; do
     fi
 done
 
-echo "### Installing mlua-test Staging ###"
+echo "### Installing Lumen Staging ###"
 
 # 1. Get latest artifact
 echo "Fetching latest artifact info from GitHub..."
@@ -52,7 +52,7 @@ unzip -o "$TMP_DIR/artifact.zip" -d "$TMP_DIR"
 # 3. Install binary and libs
 echo "Installing files..."
 sudo mkdir -p "$(dirname "$BIN_DEST")"
-sudo cp "$TMP_DIR/mlua-test" "$BIN_DEST"
+sudo cp "$TMP_DIR/lumen" "$BIN_DEST"
 sudo chmod +x "$BIN_DEST"
 
 sudo mkdir -p "$LIB_DIR"
@@ -72,12 +72,12 @@ if [ ! -f "$CONFIG_DIR/config.lua" ]; then
         sudo cp templates/staging_config.lua "$CONFIG_DIR/config.lua"
     else
         cat <<EOF | sudo tee "$CONFIG_DIR/config.lua" > /dev/null
--- mlua-test Staging Config
+-- Lumen Staging Config
 util.load_secrets(".secrets")
 package.path = package.path .. ";$LIB_DIR/?.lua"
 DATA_DIR = "$DATA_DIR"
 CONFIG_DIR = "$CONFIG_DIR"
-print("mlua-test staging started")
+print("Lumen staging started")
 EOF
     fi
 fi
@@ -85,12 +85,12 @@ fi
 # 5. Install systemd service
 if [ -d "/etc/systemd/system" ]; then
     echo "Installing systemd service..."
-    if [ -f "services/systemd/mlua-test-staging.service" ]; then
-        sudo cp services/systemd/mlua-test-staging.service /etc/systemd/system/
+    if [ -f "services/systemd/lumen-staging.service" ]; then
+        sudo cp services/systemd/lumen-staging.service /etc/systemd/system/
     else
-        cat <<EOF | sudo tee /etc/systemd/system/mlua-test-staging.service > /dev/null
+        cat <<EOF | sudo tee /etc/systemd/system/lumen-staging.service > /dev/null
 [Unit]
-Description=mlua-test Staging
+Description=Lumen Staging
 After=network.target
 
 [Service]
@@ -100,24 +100,24 @@ Restart=always
 RestartSec=5
 StandardOutput=syslog
 StandardError=syslog
-SyslogIdentifier=mlua-test-staging
+SyslogIdentifier=lumen-staging
 
 [Install]
 WantedBy=multi-user.target
 EOF
     fi
     sudo systemctl daemon-reload
-    sudo systemctl enable mlua-test-staging.service
-    echo "Service mlua-test-staging.service installed and enabled."
+    sudo systemctl enable lumen-staging.service
+    echo "Service lumen-staging.service installed and enabled."
 fi
 
 # 6. Install init.d service
 if [ -d "/etc/init.d" ]; then
     echo "Installing init.d service..."
-    if [ -f "services/init.d/mlua-test-staging" ]; then
-        sudo cp services/init.d/mlua-test-staging /etc/init.d/
+    if [ -f "services/init.d/lumen-staging" ]; then
+        sudo cp services/init.d/lumen-staging /etc/init.d/
     else
-        cat <<EOF | sudo tee /etc/init.d/mlua-test-staging > /dev/null
+        cat <<EOF | sudo tee /etc/init.d/lumen-staging > /dev/null
 #!/bin/sh /etc/rc.common
 
 START=99
@@ -134,11 +134,11 @@ start_service() {
 }
 EOF
     fi
-    sudo chmod +x /etc/init.d/mlua-test-staging
-    if command -v /etc/init.d/mlua-test-staging &> /dev/null; then
-        sudo /etc/init.d/mlua-test-staging enable
+    sudo chmod +x /etc/init.d/lumen-staging
+    if command -v /etc/init.d/lumen-staging &> /dev/null; then
+        sudo /etc/init.d/lumen-staging enable
     fi
-    echo "Service mlua-test-staging installed and enabled."
+    echo "Service lumen-staging installed and enabled."
 fi
 
 rm -rf "$TMP_DIR"

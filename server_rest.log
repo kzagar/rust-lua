@@ -1,5 +1,5 @@
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.22s
-     Running `target/debug/mlua-test tests/test_rest_exit.lua`
+     Running `target/debug/lumen tests/test_rest_exit.lua`
 GCP Logging disabled: credentials not found.
 Watching file: "/app/tests/test_rest_exit.lua"
 Warning: Gmail not initialized: Missing GOOGLE_CLIENT_SECRET in .secrets or environment

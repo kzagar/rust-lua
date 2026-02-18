@@ -355,9 +355,9 @@ async fn handle_google_callback(
 
         // Set cookies
         let jar = jar
-            .add(Cookie::build(("rua_email", email)).path("/").build())
+            .add(Cookie::build(("lumen_email", email)).path("/").build())
             .add(
-                Cookie::build(("rua_access_token", token_res.access_token))
+                Cookie::build(("lumen_access_token", token_res.access_token))
                     .path("/")
                     .build(),
             );
@@ -389,7 +389,7 @@ async fn proxy_handler(
 
     if let Some(proxy) = matched_proxy {
         if let Some(domain) = &proxy.domain {
-            let email = match jar.get("rua_email") {
+            let email = match jar.get("lumen_email") {
                 Some(c) => c.value().to_string(),
                 None => {
                     // Redirect to login

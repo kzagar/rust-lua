@@ -1,5 +1,5 @@
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.10s
-     Running `target/debug/mlua-test examples/parallel.lua`
+     Running `target/debug/lumen examples/parallel.lua`
 GCP Logging disabled: credentials not found.
 Watching file: "/home/kzagar/rust-lua/examples/parallel.lua"
 Cleaning up attachment directory: "attachments"

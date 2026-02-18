@@ -1,0 +1,15 @@
+[Unit]
+Description=Lumen Staging
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/lumen-staging /etc/lumen-staging/config.lua
+WorkingDirectory=/var/lib/lumen-staging
+Restart=always
+RestartSec=5
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=lumen-staging
+
+[Install]
+WantedBy=multi-user.target

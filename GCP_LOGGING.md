@@ -11,7 +11,7 @@ Since `gcloud` CLI is not installed, follow these steps in the Google Cloud Cons
 3.  **Go to Service Accounts**: Navigate to **IAM & Admin** > **Service Accounts**.
 4.  **Create Service Account**:
     - Click **+ CREATE SERVICE ACCOUNT**.
-    - Give it a name (e.g., `mlua-test-logger`).
+    - Give it a name (e.g., `Lumen-logger`).
     - Click **CREATE AND CONTINUE**.
 5.  **Grant Permissions**:
     - In the **Select a role** dropdown, search for and select **Logging** > **Logs Writer**.

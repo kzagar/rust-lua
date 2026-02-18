@@ -134,7 +134,7 @@ impl GcpWorker {
         labels.insert("project_id".to_string(), self.creds.project_id.clone());
 
         let payload = LogEntry {
-            log_name: format!("projects/{}/logs/mlua-test", self.creds.project_id),
+            log_name: format!("projects/{}/logs/lumen", self.creds.project_id),
             resource: MonitoredResource {
                 resource_type: "global".to_string(),
                 labels,

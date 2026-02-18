@@ -13,7 +13,7 @@ local function request(method, path, params, accept_header)
     local headers = {
         ["Accept"] = accept_header or "application/vnd.github+json",
         ["X-GitHub-Api-Version"] = "2022-11-28",
-        ["User-Agent"] = "mlua-test"
+        ["User-Agent"] = "Lumen"
     }
     if token then
         headers["Authorization"] = "Bearer " .. token

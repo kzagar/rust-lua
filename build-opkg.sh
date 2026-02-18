@@ -2,7 +2,7 @@
 set -e
 
 # Configuration
-PKG_NAME="mlua-test"
+PKG_NAME="lumen"
 PKG_VERSION="0.1.0-1"
 PKG_ARCH="aarch64_cortex-a53"
 TARGET="aarch64-unknown-linux-musl"
@@ -12,15 +12,15 @@ ZIG_PATH="/home/kzagar/rust-lua/zig-toolchain/zig-linux-x86_64-0.13.0"
 export PATH="$PATH:$ZIG_PATH"
 
 echo "### Building binary for $TARGET (PROD) ###"
-MLUA_TEST_BUILD_ENV=prod cargo zigbuild --release --target "$TARGET"
+LUMEN_BUILD_ENV=prod cargo zigbuild --release --target "$TARGET"
 
 # Prepare staging directory
 STAGING_DIR="target/opkg_staging"
 rm -rf "$STAGING_DIR"
 mkdir -p "$STAGING_DIR/usr/bin"
-mkdir -p "$STAGING_DIR/usr/share/mlua-test"
-mkdir -p "$STAGING_DIR/etc/mlua-test"
-mkdir -p "$STAGING_DIR/var/lib/mlua-test"
+mkdir -p "$STAGING_DIR/usr/share/lumen"
+mkdir -p "$STAGING_DIR/etc/lumen"
+mkdir -p "$STAGING_DIR/var/lib/lumen"
 mkdir -p "$STAGING_DIR/etc/init.d"
 mkdir -p "$STAGING_DIR/CONTROL"
 
@@ -38,14 +38,14 @@ fi
 cp "$BINARY_PATH" "$STAGING_DIR/usr/bin/"
 
 # Copy Lua libraries
-cp lib/*.lua "$STAGING_DIR/usr/share/mlua-test/"
+cp lib/*.lua "$STAGING_DIR/usr/share/lumen/"
 
 # Copy config template
-cp templates/prod_config.lua "$STAGING_DIR/etc/mlua-test/config.lua"
+cp templates/prod_config.lua "$STAGING_DIR/etc/lumen/config.lua"
 
 # Create init script
-cp services/init.d/mlua-test "$STAGING_DIR/etc/init.d/mlua-test"
-chmod +x "$STAGING_DIR/etc/init.d/mlua-test"
+cp services/init.d/lumen "$STAGING_DIR/etc/init.d/lumen"
+chmod +x "$STAGING_DIR/etc/init.d/lumen"
 
 # Create control file
 cat <<EOF > "$STAGING_DIR/CONTROL/control"
@@ -56,23 +56,23 @@ Maintainer: Antigravity
 Section: utils
 Priority: optional
 Depends: unzip
-Description: mlua-test application with Lua 5.5 and SQLite3
+Description: Lumen application with Lua 5.5 and SQLite3
 Source: https://github.com/kzagar/rust-lua
 EOF
 
 # Create conffiles
 cat <<EOF > "$STAGING_DIR/CONTROL/conffiles"
-/etc/mlua-test/config.lua
-/var/lib/mlua-test/server.db
+/etc/lumen/config.lua
+/var/lib/lumen/server.db
 EOF
 
 # Create postinst script
 cat <<EOF > "$STAGING_DIR/CONTROL/postinst"
 #!/bin/sh
 [ -z "\$IPKG_INSTROOT" ] && {
-    chmod +x /etc/init.d/mlua-test
-    /etc/init.d/mlua-test enable
-    /etc/init.d/mlua-test start
+    chmod +x /etc/init.d/lumen
+    /etc/init.d/lumen enable
+    /etc/init.d/lumen start
 }
 exit 0
 EOF

@@ -1,15 +1,15 @@
--- mlua-test Staging Config
+-- Lumen Staging Config
 util.load_secrets(".secrets")
 
 -- Set Lua library path
-package.path = package.path .. ";/usr/share/mlua-test-staging/?.lua"
+package.path = package.path .. ";/usr/share/lumen-staging/?.lua"
 
 -- Global paths for scripts
-DATA_DIR = "/var/lib/mlua-test-staging"
-CONFIG_DIR = "/etc/mlua-test-staging"
+DATA_DIR = "/var/lib/lumen-staging"
+CONFIG_DIR = "/etc/lumen-staging"
 
-local lkg_binary = DATA_DIR .. "/mlua-test.lkg"
-local current_binary = "/usr/local/bin/mlua-test-staging"
+local lkg_binary = DATA_DIR .. "/lumen.lkg"
+local current_binary = "/usr/local/bin/lumen-staging"
 
 -- Sanity check
 local function sanity_check()
@@ -20,7 +20,7 @@ local function sanity_check()
     return true
 end
 
-print("mlua-test staging starting (Version: " .. MLUA_TEST_VERSION .. ")")
+print("Lumen staging starting (Version: " .. LUMEN_VERSION .. ")")
 
 local ok, err = sanity_check()
 if not ok then
